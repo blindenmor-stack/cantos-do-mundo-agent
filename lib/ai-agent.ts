@@ -1,4 +1,5 @@
 import { generateText } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { getSupabase } from "./supabase";
 
 // Qualification scoring
@@ -160,15 +161,8 @@ export async function processMessage(
     { role: "user", content: userMessage },
   ];
 
-  let modelId = "anthropic/claude-sonnet-4.6";
-
-  // If no API key env, try using the AI Gateway
-  if (!process.env.ANTHROPIC_API_KEY) {
-    modelId = "anthropic/claude-sonnet-4.6";
-  }
-
   const { text } = await generateText({
-    model: modelId,
+    model: anthropic("claude-sonnet-4-20250514"),
     system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${context.currentStep}\nINSTRUÇÃO: ${stepInstruction}\nDADOS JÁ COLETADOS: ${JSON.stringify(context.qualificationData)}`,
     messages,
   });
@@ -251,7 +245,7 @@ async function extractQualificationData(
 ): Promise<QualificationData> {
   try {
     const { text } = await generateText({
-      model: "anthropic/claude-sonnet-4.6",
+      model: anthropic("claude-sonnet-4-20250514"),
       system: `Extraia dados de qualificação da mensagem do usuário. Retorne APENAS um JSON válido com os campos que conseguir identificar. Campos possíveis: name (string), destination (string), travel_dates (string), travelers_count (number), travelers_type (string: solo/couple/family/friends), has_international_experience (boolean), travel_style (string), budget_mentioned (string: alto/medio/baixo), only_wants_price (boolean).
 
 Dados já existentes: ${JSON.stringify(existingData)}
