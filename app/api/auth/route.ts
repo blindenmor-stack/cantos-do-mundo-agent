@@ -9,10 +9,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true });
   }
 
-  if (password === process.env.DASHBOARD_PASSWORD) {
+  const expected = process.env.DASHBOARD_PASSWORD || "cantos2026";
+  if (password === expected) {
     await setSession();
     return NextResponse.json({ success: true });
   }
 
-  return NextResponse.json({ success: false, error: "Senha incorreta" }, { status: 401 });
+  return NextResponse.json(
+    { success: false, error: "Senha incorreta" },
+    { status: 401 }
+  );
 }
