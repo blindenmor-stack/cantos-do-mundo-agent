@@ -5,7 +5,9 @@ import { processMessage, calculateScore, getQualificationStatus, generateHandoff
 
 export const maxDuration = 60;
 
-// Always return 200 to Z-API to prevent webhook disabling
+const BUFFER_MS = 8000; // 8 seconds buffer to collect multiple messages
+
+// Always return 200 to Z-API
 function ok(data: Record<string, unknown> = {}) {
   return NextResponse.json({ status: "ok", ...data });
 }
@@ -17,120 +19,79 @@ export async function POST(req: NextRequest) {
 
     console.log("[Webhook] Received:", JSON.stringify(body).slice(0, 500));
 
-    // Parse the Z-API webhook payload
     const msg = parseWebhookPayload(body);
-    if (!msg) {
-      return ok({ detail: "ignored" });
-    }
+    if (!msg) return ok({ detail: "ignored" });
 
     const { type: msgType, content: msgContent } = getMessageContent(msg);
-    if (!msgContent && msgType === "unknown") {
-      return ok({ detail: "no_content" });
-    }
+    if (!msgContent && msgType === "unknown") return ok({ detail: "no_content" });
 
     const phone = msg.phone.replace(/\D/g, "");
 
-    // Find or create conversation
-    // Use maybeSingle() instead of single() to avoid error when no rows found
-    const { data: existingConv, error: convError } = await supabase
+    // === STEP 1: Find or create conversation ===
+    const { data: existingConv } = await supabase
       .from("conversations")
       .select("*")
       .eq("phone", phone)
-      .eq("bot_active", true)
       .order("started_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-
-    if (convError) {
-      console.error("[Webhook] Error finding conversation:", convError);
-    }
 
     let conversation = existingConv;
     let lead: Record<string, unknown> | null = null;
 
     if (!conversation) {
-      // Also check for any recent conversation (even with bot inactive) to avoid duplicating leads
-      const { data: recentConv } = await supabase
-        .from("conversations")
-        .select("*, leads:lead_id(*)")
-        .eq("phone", phone)
-        .order("started_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      // New lead + new conversation
+      const leadInsert: Record<string, unknown> = {
+        phone,
+        name: msg.senderName || null,
+        source: "whatsapp",
+        qualification_status: "pending",
+        qualification_score: 0,
+      };
 
-      if (recentConv) {
-        // Existing conversation found (bot may be inactive)
-        conversation = recentConv;
-        lead = recentConv.leads || null;
-
-        // Update CTWA data if this is a new click
-        if (msg.referral?.ctwaClid && lead) {
-          await supabase
-            .from("leads")
-            .update({
-              ctwa_clid: msg.referral.ctwaClid,
-              ad_id: msg.referral.sourceId || (lead.ad_id as string),
-            })
-            .eq("id", lead.id);
+      if (msg.referral) {
+        leadInsert.ctwa_clid = msg.referral.ctwaClid || null;
+        leadInsert.ad_id = msg.referral.sourceId || null;
+        if (msg.referral.sourceUrl) {
+          leadInsert.utm_source = "meta";
+          leadInsert.utm_medium = "ctwa";
         }
-      } else {
-        // Truly new conversation - create lead and conversation
-        const leadInsert: Record<string, unknown> = {
-          phone,
-          name: msg.senderName || null,
-          source: "whatsapp",
-          qualification_status: "pending",
-          qualification_score: 0,
-        };
-
-        // Capture CTWA and Ad data from referral
-        if (msg.referral) {
-          leadInsert.ctwa_clid = msg.referral.ctwaClid || null;
-          leadInsert.ad_id = msg.referral.sourceId || null;
-          if (msg.referral.sourceUrl) {
-            leadInsert.utm_source = "meta";
-            leadInsert.utm_medium = "ctwa";
-          }
-        }
-
-        const { data: newLead, error: leadError } = await supabase
-          .from("leads")
-          .insert(leadInsert)
-          .select()
-          .single();
-
-        if (leadError) {
-          console.error("[Webhook] Error creating lead:", leadError);
-          return ok({ detail: "lead_creation_failed" });
-        }
-
-        lead = newLead;
-
-        // Create conversation
-        const { data: newConv, error: newConvError } = await supabase
-          .from("conversations")
-          .insert({
-            lead_id: newLead?.id,
-            phone,
-            bot_active: true,
-            current_step: "greeting",
-            qualification_data: {},
-            bot_messages_count: 0,
-            messages_count: 0,
-            last_message_at: new Date().toISOString(),
-          })
-          .select()
-          .single();
-
-        if (newConvError) {
-          console.error("[Webhook] Error creating conversation:", newConvError);
-          return ok({ detail: "conversation_creation_failed" });
-        }
-
-        conversation = newConv;
       }
+
+      const { data: newLead, error: leadError } = await supabase
+        .from("leads")
+        .insert(leadInsert)
+        .select()
+        .single();
+
+      if (leadError) {
+        console.error("[Webhook] Error creating lead:", leadError);
+        return ok({ detail: "lead_creation_failed" });
+      }
+      lead = newLead;
+
+      const { data: newConv, error: convError } = await supabase
+        .from("conversations")
+        .insert({
+          lead_id: newLead.id,
+          phone,
+          bot_active: true,
+          current_step: "greeting",
+          qualification_data: {},
+          bot_messages_count: 0,
+          messages_count: 0,
+          last_message_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (convError) {
+        console.error("[Webhook] Error creating conversation:", convError);
+        return ok({ detail: "conversation_creation_failed" });
+      }
+      conversation = newConv;
     } else {
-      // Get existing lead
+      // Existing conversation - get lead
       const { data: existingLead } = await supabase
         .from("leads")
         .select("*")
@@ -138,7 +99,7 @@ export async function POST(req: NextRequest) {
         .single();
       lead = existingLead;
 
-      // Update CTWA data if this is a new click
+      // Update CTWA if new click
       if (msg.referral?.ctwaClid && lead) {
         await supabase
           .from("leads")
@@ -155,8 +116,8 @@ export async function POST(req: NextRequest) {
       return ok({ detail: "resolution_failed" });
     }
 
-    // Save incoming message
-    const { error: msgInsertError } = await supabase.from("messages").insert({
+    // === STEP 2: Save incoming message immediately ===
+    await supabase.from("messages").insert({
       conversation_id: conversation.id,
       lead_id: lead.id,
       direction: "incoming",
@@ -167,25 +128,70 @@ export async function POST(req: NextRequest) {
       metadata: msg.referral ? { referral: msg.referral } : {},
     });
 
-    if (msgInsertError) {
-      console.error("[Webhook] Error saving message:", msgInsertError);
-    }
-
-    // Increment messages_count
+    // Update last_message_at
     await supabase
       .from("conversations")
-      .update({
-        messages_count: (conversation.messages_count || 0) + 1,
-        last_message_at: new Date().toISOString(),
-      })
+      .update({ last_message_at: new Date().toISOString() })
       .eq("id", conversation.id);
 
-    // If bot is not active, just save the message
+    // If bot is not active, just save
     if (!conversation.bot_active) {
       return ok({ detail: "saved_human_mode" });
     }
 
-    // Get conversation history
+    // === STEP 3: Message buffer ===
+    // Check if there's already a processing scheduled (another webhook call waiting)
+    // We use context_summary as a lightweight lock: store the scheduled timestamp
+    const now = Date.now();
+    const scheduledAt = conversation.context_summary
+      ? parseInt(conversation.context_summary, 10)
+      : 0;
+
+    if (scheduledAt > 0 && now - scheduledAt < BUFFER_MS + 2000) {
+      // Another call is already waiting to process — just save and return
+      console.log("[Webhook] Buffer active, message saved, skipping processing");
+      return ok({ detail: "buffered" });
+    }
+
+    // Mark that we're scheduling processing
+    await supabase
+      .from("conversations")
+      .update({ context_summary: String(now) })
+      .eq("id", conversation.id);
+
+    // Wait for buffer period to collect more messages
+    console.log("[Webhook] Waiting buffer:", BUFFER_MS, "ms");
+    await new Promise((r) => setTimeout(r, BUFFER_MS));
+
+    // === STEP 4: Collect all unprocessed messages and process ===
+    // Re-fetch conversation (may have been updated by other webhook calls)
+    const { data: freshConv } = await supabase
+      .from("conversations")
+      .select("*")
+      .eq("id", conversation.id)
+      .single();
+
+    if (!freshConv || !freshConv.bot_active) {
+      return ok({ detail: "bot_disabled_during_buffer" });
+    }
+
+    // Check if WE are the one who should process (our timestamp matches)
+    const currentScheduled = freshConv.context_summary
+      ? parseInt(freshConv.context_summary, 10)
+      : 0;
+    if (currentScheduled !== now) {
+      // A newer webhook call took over — let it handle processing
+      console.log("[Webhook] Newer buffer took over, skipping");
+      return ok({ detail: "superseded" });
+    }
+
+    // Clear the lock
+    await supabase
+      .from("conversations")
+      .update({ context_summary: null })
+      .eq("id", conversation.id);
+
+    // Get conversation history (includes all buffered messages)
     const { data: history } = await supabase
       .from("messages")
       .select("direction, content, is_from_bot")
@@ -194,31 +200,43 @@ export async function POST(req: NextRequest) {
       .limit(20);
 
     const messagesHistory = (history || [])
-      .filter((m) => m.content) // Skip empty messages
+      .filter((m) => m.content)
       .map((m) => ({
         role: (m.direction === "incoming" ? "user" : "assistant") as "user" | "assistant",
         content: m.content || "",
       }));
 
+    // Combine recent unprocessed user messages into one
+    const recentUserMsgs: string[] = [];
+    for (let i = messagesHistory.length - 1; i >= 0; i--) {
+      if (messagesHistory[i].role === "user") {
+        recentUserMsgs.unshift(messagesHistory[i].content);
+      } else {
+        break; // Stop at first bot message
+      }
+    }
+    const combinedUserMessage = recentUserMsgs.join("\n");
+
+    console.log("[Webhook] Processing combined message:", combinedUserMessage.slice(0, 200));
+
     // Process with AI
     const context: ConversationContext = {
       conversationId: conversation.id,
       leadId: lead.id as string,
-      currentStep: conversation.current_step || "greeting",
-      qualificationData: conversation.qualification_data || {},
+      currentStep: freshConv.current_step || "greeting",
+      qualificationData: freshConv.qualification_data || {},
       messagesHistory,
-      botMessagesCount: conversation.bot_messages_count || 0,
+      botMessagesCount: freshConv.bot_messages_count || 0,
     };
 
-    const result = await processMessage(msgContent, context);
+    const result = await processMessage(combinedUserMessage, context);
 
-    // Send responses via Z-API
+    // Send responses
     if (result.responses.length > 0) {
       try {
         await sendMultipleMessages(phone, result.responses);
       } catch (sendError) {
-        console.error("[Webhook] Error sending Z-API messages:", sendError);
-        // Still save the messages to DB even if sending failed
+        console.error("[Webhook] Error sending:", sendError);
       }
 
       // Save bot messages
@@ -235,15 +253,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Update conversation
-    const newBotCount = (conversation.bot_messages_count || 0) + result.responses.length;
-    const newMsgCount = (conversation.messages_count || 0) + 1 + result.responses.length;
-
     const convUpdate: Record<string, unknown> = {
       current_step: result.newStep,
       qualification_data: result.updatedData,
       last_message_at: new Date().toISOString(),
-      bot_messages_count: newBotCount,
-      messages_count: newMsgCount,
+      bot_messages_count: (freshConv.bot_messages_count || 0) + result.responses.length,
+      messages_count: (freshConv.messages_count || 0) + recentUserMsgs.length + result.responses.length,
     };
 
     if (result.shouldHandoff) {
@@ -254,7 +269,6 @@ export async function POST(req: NextRequest) {
       const score = calculateScore(result.updatedData);
       convUpdate.handoff_summary = await generateHandoffSummary(result.updatedData, score);
 
-      // Update lead qualification
       await supabase
         .from("leads")
         .update({
@@ -270,14 +284,11 @@ export async function POST(req: NextRequest) {
           qualification_summary: convUpdate.handoff_summary,
         })
         .eq("id", lead.id);
-    } else {
-      // Update lead name if captured
-      if (result.updatedData.name && !(lead.name as string)) {
-        await supabase
-          .from("leads")
-          .update({ name: result.updatedData.name })
-          .eq("id", lead.id);
-      }
+    } else if (result.updatedData.name && !(lead.name as string)) {
+      await supabase
+        .from("leads")
+        .update({ name: result.updatedData.name })
+        .eq("id", lead.id);
     }
 
     await supabase
@@ -285,15 +296,13 @@ export async function POST(req: NextRequest) {
       .update(convUpdate)
       .eq("id", conversation.id);
 
-    return ok({ detail: "processed" });
+    return ok({ detail: "processed", buffered_messages: recentUserMsgs.length });
   } catch (error) {
     console.error("[Webhook] Unhandled error:", error);
-    // CRITICAL: Always return 200 to Z-API to prevent webhook disabling
     return ok({ detail: "error", message: String(error) });
   }
 }
 
-// Z-API may send GET for webhook verification
 export async function GET() {
   return NextResponse.json({ status: "ok", service: "cantos-do-mundo-agent" });
 }
