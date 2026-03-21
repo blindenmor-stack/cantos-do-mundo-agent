@@ -116,7 +116,21 @@ export async function POST(req: NextRequest) {
       return ok({ detail: "resolution_failed" });
     }
 
-    // === STEP 2: Save incoming message immediately ===
+    // === STEP 2: Dedup by messageId ===
+    if (msg.messageId) {
+      const { data: existingMsg } = await supabase
+        .from("messages")
+        .select("id")
+        .eq("zapi_message_id", msg.messageId)
+        .maybeSingle();
+
+      if (existingMsg) {
+        console.log("[Webhook] Duplicate messageId, skipping:", msg.messageId);
+        return ok({ detail: "duplicate" });
+      }
+    }
+
+    // === STEP 3: Save incoming message immediately ===
     await supabase.from("messages").insert({
       conversation_id: conversation.id,
       lead_id: lead.id,
@@ -139,16 +153,22 @@ export async function POST(req: NextRequest) {
       return ok({ detail: "saved_human_mode" });
     }
 
-    // === STEP 3: Message buffer ===
-    // Check if there's already a processing scheduled (another webhook call waiting)
-    // We use context_summary as a lightweight lock: store the scheduled timestamp
+    // === STEP 4: Message buffer ===
+    // Use context_summary to store the processing lock timestamp
+    // Re-read fresh to avoid race conditions
+    const { data: freshCheck } = await supabase
+      .from("conversations")
+      .select("context_summary")
+      .eq("id", conversation.id)
+      .single();
+
     const now = Date.now();
-    const scheduledAt = conversation.context_summary
-      ? parseInt(conversation.context_summary, 10)
+    const scheduledAt = freshCheck?.context_summary
+      ? parseInt(freshCheck.context_summary, 10)
       : 0;
 
-    if (scheduledAt > 0 && now - scheduledAt < BUFFER_MS + 2000) {
-      // Another call is already waiting to process — just save and return
+    if (scheduledAt > 0 && now - scheduledAt < BUFFER_MS + 3000) {
+      // Another call is already waiting — just save and return
       console.log("[Webhook] Buffer active, message saved, skipping processing");
       return ok({ detail: "buffered" });
     }

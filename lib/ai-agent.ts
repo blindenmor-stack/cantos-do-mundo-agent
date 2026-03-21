@@ -227,7 +227,7 @@ export async function processMessage(
 function getStepInstruction(step: string, data: QualificationData): string {
   switch (step) {
     case "greeting":
-      return "Dê boas-vindas calorosas. Se apresente como Miry da Cantos do Mundo. Pergunte o nome da pessoa. Use 3 mensagens separadas por |||.";
+      return "Se apresente como Miry da Cantos do Mundo. Use EXATAMENTE 3 mensagens separadas por |||. Exemplo: 'Oi! Tudo bem? 😊|||Meu nome é Miry, da Cantos do Mundo!|||Antes de te ajudar, posso saber seu nome, por favor?' A TERCEIRA mensagem DEVE perguntar o nome da pessoa. NÃO mencione viagem ainda, apenas pergunte o nome.";
     case "destination":
       return `O nome da pessoa é ${data.name || "desconhecido"}. Use o nome dela na conversa. Pergunte sobre qual destino ou tipo de viagem tem interesse.`;
     case "dates":
