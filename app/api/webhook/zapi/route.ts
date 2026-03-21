@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
       .select("*")
       .eq("phone", phone)
       .eq("bot_active", true)
-      .order("created_at", { ascending: false })
+      .order("started_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
         .from("conversations")
         .select("*, leads:lead_id(*)")
         .eq("phone", phone)
-        .order("created_at", { ascending: false })
+        .order("started_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
