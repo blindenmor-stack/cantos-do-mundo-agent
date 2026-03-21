@@ -20,7 +20,7 @@ export async function GET(
 
   const { data: conversation } = await supabase
     .from("conversations")
-    .select("*, leads(name, phone, qualification_status, qualification_score)")
+    .select("*, leads:lead_id(name, phone, qualification_status, qualification_score)")
     .eq("id", id)
     .single();
 

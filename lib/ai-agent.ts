@@ -1,6 +1,5 @@
 import { generateText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
-import { getSupabase } from "./supabase";
 
 // Qualification scoring
 interface QualificationData {
@@ -156,44 +155,73 @@ export async function processMessage(
 
   const stepInstruction = getStepInstruction(context.currentStep, context.qualificationData);
 
-  const messages: { role: "user" | "assistant"; content: string }[] = [
-    ...context.messagesHistory.slice(-10), // Last 10 messages for context
-    { role: "user", content: userMessage },
-  ];
+  // Build messages - the history already includes the current message from DB
+  // so we don't append userMessage again. But if history is empty (first message
+  // race condition), ensure the user message is present.
+  let messages: { role: "user" | "assistant"; content: string }[] =
+    context.messagesHistory.slice(-10);
 
-  const { text } = await generateText({
-    model: anthropic("claude-sonnet-4-20250514"),
-    system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${context.currentStep}\nINSTRUÇÃO: ${stepInstruction}\nDADOS JÁ COLETADOS: ${JSON.stringify(context.qualificationData)}`,
-    messages,
-  });
-
-  // Split responses by |||
-  const responses = text
-    .split("|||")
-    .map((r) => r.trim())
-    .filter((r) => r.length > 0);
-
-  // Extract data from conversation using AI
-  const updatedData = await extractQualificationData(
-    userMessage,
-    context.currentStep,
-    context.qualificationData
-  );
-
-  // Determine next step
-  const newStep = determineNextStep(context.currentStep, updatedData);
-
-  // Check if should handoff
-  const score = calculateScore(updatedData);
-  const shouldHandoff = newStep === "handoff" || newStep === "closing";
-
-  let handoffReason: string | undefined;
-  if (shouldHandoff) {
-    const status = getQualificationStatus(score);
-    handoffReason = `${status}_score_${score}`;
+  const lastMsg = messages[messages.length - 1];
+  if (!lastMsg || lastMsg.role !== "user" || lastMsg.content !== userMessage) {
+    messages = [...messages, { role: "user", content: userMessage }];
   }
 
-  return { responses, newStep, updatedData, shouldHandoff, handoffReason };
+  // Ensure messages alternate properly (AI SDK requirement)
+  // Merge consecutive same-role messages
+  const cleanedMessages: typeof messages = [];
+  for (const msg of messages) {
+    const prev = cleanedMessages[cleanedMessages.length - 1];
+    if (prev && prev.role === msg.role) {
+      prev.content += "\n" + msg.content;
+    } else {
+      cleanedMessages.push({ ...msg });
+    }
+  }
+
+  try {
+    const { text } = await generateText({
+      model: anthropic("claude-sonnet-4-20250514"),
+      system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${context.currentStep}\nINSTRUÇÃO: ${stepInstruction}\nDADOS JÁ COLETADOS: ${JSON.stringify(context.qualificationData)}`,
+      messages: cleanedMessages,
+    });
+
+    // Split responses by |||
+    const responses = text
+      .split("|||")
+      .map((r) => r.trim())
+      .filter((r) => r.length > 0);
+
+    // Extract data from conversation using AI
+    const updatedData = await extractQualificationData(
+      userMessage,
+      context.currentStep,
+      context.qualificationData
+    );
+
+    // Determine next step
+    const newStep = determineNextStep(context.currentStep, updatedData);
+
+    // Check if should handoff
+    const score = calculateScore(updatedData);
+    const shouldHandoff = newStep === "handoff" || newStep === "closing";
+
+    let handoffReason: string | undefined;
+    if (shouldHandoff) {
+      const status = getQualificationStatus(score);
+      handoffReason = `${status}_score_${score}`;
+    }
+
+    return { responses, newStep, updatedData, shouldHandoff, handoffReason };
+  } catch (error) {
+    console.error("[AI] Error generating response:", error);
+    // Return a graceful fallback so the conversation doesn't break
+    return {
+      responses: ["Opa, tive um probleminha técnico aqui! 😅", "Pode repetir o que você disse?"],
+      newStep: context.currentStep,
+      updatedData: context.qualificationData,
+      shouldHandoff: false,
+    };
+  }
 }
 
 function getStepInstruction(step: string, data: QualificationData): string {

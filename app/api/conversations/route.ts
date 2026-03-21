@@ -8,8 +8,8 @@ export async function GET(req: NextRequest) {
 
   let query = supabase
     .from("conversations")
-    .select("*, leads(name, phone, qualification_status, qualification_score)")
-    .order("last_message_at", { ascending: false })
+    .select("*, leads:lead_id(name, phone, qualification_status, qualification_score)")
+    .order("last_message_at", { ascending: false, nullsFirst: false })
     .limit(100);
 
   if (botActive === "true") query = query.eq("bot_active", true);
