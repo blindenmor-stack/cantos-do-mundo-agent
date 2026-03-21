@@ -11,7 +11,7 @@ interface QualificationData {
   has_passport?: boolean;
   travel_motive?: string;
   first_time?: boolean;
-  budget_mentioned?: string;
+  budget_per_person?: string;
   only_wants_price?: boolean;
   extra_notes?: string;
 }
@@ -35,8 +35,8 @@ export function calculateScore(data: QualificationData): number {
   if (data.first_time === false) score += 10; // already traveled = experienced
   if (data.travel_motive) score += 15;
   if (data.has_passport) score += 10;
+  if (data.budget_per_person) score += 10;
   if (data.only_wants_price) score -= 20;
-  if (data.budget_mentioned === "baixo") score -= 30;
 
   return score;
 }
@@ -109,7 +109,7 @@ Responda SEMPRE neste formato exato:
 RESPONSE: [suas mensagens separadas por ||| se necessário]
 DATA: {"campo": "valor"} ← JSON com dados novos extraídos da mensagem do lead
 
-Campos possíveis no DATA: name, destination, travel_dates, travelers_count, travelers_type (solo/couple/family/friends), has_passport (boolean), travel_motive (string), first_time (boolean), extra_notes (string), only_wants_price (boolean)
+Campos possíveis no DATA: name, destination, travel_dates, travelers_count, travelers_type (solo/couple/family/friends), has_passport (boolean), travel_motive (string), first_time (boolean), budget_per_person (string), extra_notes (string), only_wants_price (boolean)
 
 Se não tem dados novos pra extrair: DATA: {}
 Extraia dados de TODA a conversa, não só da última mensagem.`;
@@ -246,8 +246,10 @@ function getStepInstruction(step: string, data: QualificationData): string {
       return "Pergunte: 'Me conta, a viagem é para alguma comemoração, férias, descanso?' 1 mensagem.";
     case "style":
       return "Se destino internacional: pergunte 'Vocês já possuem passaporte?' Se nacional: pergunte se tem alguma experiência específica que gostariam. 1 mensagem.";
+    case "budget":
+      return `Responda positivamente e de forma curta. Depois pergunte algo como: "E ${data.name || "vocês"}, tem ideia de quanto gostariam de investir nessa viagem, por pessoa? Pode ser um valor aproximado mesmo, pra gente já direcionar pro roteiro certo." 1 mensagem. SEM emojis.`;
     case "closing":
-      return `Diga algo como: "Perfeito ${data.name || ""}, vou passar todas essas informações pra nossa especialista em viagens poder te ajudar em cada detalhe. Se quiser ir adiantando, pode mandar um áudio contando o que seria importantíssimo ter nessa viagem, tipos de passeios que gostam, o que não pode faltar... assim já chega tudo certinho pra ela montar a proposta!" Use 1 mensagem. SEM emojis.`;
+      return `Responda positivamente. Use 2 mensagens separadas por |||. Primeira mensagem: "Perfeito ${data.name || ""}, já tenho tudo que preciso! Vou passar todas as informações pra Miriany, nossa especialista. Logo mais ela te manda mensagem aqui por esse número mesmo pra montar o roteiro certinho pra vocês." Segunda mensagem: "Se quiser ir adiantando, manda um áudio contando o que seria mais importante nessa viagem, tipos de passeios que gostam, experiências que não podem faltar... assim já chega tudo redondinho pra ela." SEM emojis.`;
     default:
       return "Continue naturalmente. 1 pergunta por vez. Sem emojis.";
   }
@@ -266,7 +268,9 @@ function determineNextStep(currentStep: string, data: QualificationData): string
     case "experience":
       return data.travel_motive ? "style" : "experience";
     case "style":
-      return data.has_passport !== undefined ? "closing" : "style";
+      return data.has_passport !== undefined ? "budget" : "style";
+    case "budget":
+      return data.budget_per_person ? "closing" : "budget";
     case "closing":
       return "handoff";
     default:
@@ -289,5 +293,6 @@ Viajantes: ${data.travelers_count || "?"} (${data.travelers_type || "?"})
 Motivo: ${data.travel_motive || "N/I"}
 Primeira vez: ${data.first_time === true ? "Sim" : data.first_time === false ? "Não" : "N/I"}
 Passaporte: ${data.has_passport === true ? "Sim" : data.has_passport === false ? "Não" : "N/I"}
+Orçamento/pessoa: ${data.budget_per_person || "N/I"}
 Notas: ${data.extra_notes || "-"}`;
 }
