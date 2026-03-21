@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { BarChart3, Globe, MessageSquare, Settings, Users, LogOut } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { BarChart3, Globe, MessageSquare, Settings, Users } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 
 const links = [
@@ -16,16 +15,6 @@ const links = [
 
 export function DashboardNav() {
   const pathname = usePathname();
-  const router = useRouter();
-
-  async function handleLogout() {
-    await fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "logout" }),
-    });
-    router.push("/login");
-  }
 
   return (
     <aside className="flex w-60 flex-col border-r border-border bg-card">
@@ -56,15 +45,9 @@ export function DashboardNav() {
       </nav>
       <div className="p-2">
         <Separator className="mb-2" />
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start gap-3 text-muted-foreground"
-          onClick={handleLogout}
-        >
-          <LogOut className="h-4 w-4" />
-          Sair
-        </Button>
+        <p className="px-3 text-xs text-muted-foreground">
+          Agente Miry v1.0
+        </p>
       </div>
     </aside>
   );

@@ -13,16 +13,25 @@ function getBaseUrl() {
   return `${ZAPI_BASE}/${instanceId}/token/${token}`;
 }
 
+function buildHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const { clientToken } = getConfig();
+  if (clientToken) {
+    headers["Client-Token"] = clientToken;
+  }
+  return headers;
+}
+
 export async function sendText(phone: string, message: string) {
   const url = `${getBaseUrl()}/send-text`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Client-Token": getConfig().clientToken || "" },
+    headers: buildHeaders(),
     body: JSON.stringify({ phone, message }),
   });
   if (!res.ok) {
     const err = await res.text();
-    console.error("[Z-API] send-text error:", err);
+    console.error("[Z-API] send-text error:", res.status, err);
     throw new Error(`Z-API send-text failed: ${res.status}`);
   }
   return res.json();
@@ -33,7 +42,7 @@ export async function sendTyping(phone: string) {
   try {
     await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Client-Token": getConfig().clientToken || "" },
+      headers: buildHeaders(),
       body: JSON.stringify({ phone, duration: 3000 }),
     });
   } catch {
