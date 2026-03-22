@@ -17,21 +17,50 @@ export interface QualificationData {
 
 export function calculateScore(data: QualificationData): number {
   let score = 0;
+
+  // Destino definido (20 pts)
   if (data.destination) score += 20;
+
+  // Data da viagem (25 pts max — mais próximo = mais quente)
   if (data.travel_dates) {
     const months = parseDateToMonths(data.travel_dates);
-    if (months !== null && months <= 6) score += 25;
+    if (months !== null && months <= 3) score += 25;
+    else if (months !== null && months <= 6) score += 20;
     else if (months !== null && months <= 12) score += 15;
-    else score += 5;
+    else score += 10;
   }
+
+  // Número de viajantes (15 pts)
   if (data.travelers_count && data.travelers_count >= 2) score += 15;
   else if (data.travelers_count === 1) score += 10;
-  if (data.travel_motive) score += 15;
-  if (data.has_passport) score += 10;
-  if (data.budget_per_person) score += 10;
-  if (data.only_wants_price) score -= 20;
-  return score;
+
+  // Motivo da viagem (15 pts — motivos especiais = mais engajado)
+  if (data.travel_motive) {
+    const special = ["lua de mel", "casamento", "aniversário", "aniversario", "comemoração"];
+    if (special.some((s) => (data.travel_motive || "").toLowerCase().includes(s))) {
+      score += 15; // Motivo especial = muito engajado
+    } else {
+      score += 10;
+    }
+  }
+
+  // Orçamento informado (15 pts)
+  if (data.budget_per_person) score += 15;
+
+  // Respondeu todas as perguntas = lead completo (10 pts bonus)
+  const fieldsCount = [data.destination, data.travel_dates, data.travelers_count, data.travel_motive, data.budget_per_person].filter(Boolean).length;
+  if (fieldsCount >= 5) score += 10;
+
+  // Penalidade: só quer preço sem contexto
+  if (data.only_wants_price) score -= 30;
+
+  return Math.max(0, Math.min(100, score));
 }
+
+// Score ranges:
+// 0-39: Desqualificado (não forneceu dados suficientes ou só quer preço)
+// 40-69: Morno (forneceu alguns dados, potencial)
+// 70-100: Qualificado (forneceu tudo, lead quente)
 
 function parseDateToMonths(dateStr: string): number | null {
   const lower = dateStr.toLowerCase();
@@ -54,8 +83,8 @@ function parseDateToMonths(dateStr: string): number | null {
 }
 
 export function getQualificationStatus(score: number): "qualified" | "warm" | "disqualified" {
-  if (score >= 60) return "qualified";
-  if (score >= 30) return "warm";
+  if (score >= 70) return "qualified";
+  if (score >= 40) return "warm";
   return "disqualified";
 }
 
@@ -186,8 +215,8 @@ export async function processMessage(
     }
   }
 
-  // Check handoff
-  const shouldHandoff = finalStep === "handoff";
+  // Check handoff — closing IS the handoff (sends the goodbye + triggers scoring)
+  const shouldHandoff = finalStep === "handoff" || finalStep === "closing";
   let handoffReason: string | undefined;
   if (shouldHandoff) {
     const score = calculateScore(updatedData);
