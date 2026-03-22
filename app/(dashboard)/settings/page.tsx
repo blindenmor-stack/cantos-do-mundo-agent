@@ -192,6 +192,19 @@ export default function SettingsPage() {
             </div>
           </div>
           <Separator />
+          <div className="space-y-2">
+            <Label>Telefone para Notificação de Leads</Label>
+            <Input
+              value={agentConfig.notify_phone || ""}
+              onChange={(e) => setAgentConfig({ ...agentConfig, notify_phone: e.target.value })}
+              placeholder="5551999999999 (DDD + número, sem +)"
+            />
+            <p className="text-xs text-muted-foreground">
+              Quando um lead for qualificado ou precisar de atenção humana, a Miry envia uma notificação
+              pra esse número via WhatsApp com o resumo do lead. Deixe vazio para desativar.
+            </p>
+          </div>
+          <Separator />
           <Button onClick={saveAgent} disabled={saving}>
             <Save className="mr-2 h-4 w-4" />
             Salvar Agente
