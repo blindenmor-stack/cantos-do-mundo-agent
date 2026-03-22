@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
     let lead: Record<string, unknown> | null = null;
 
     if (!conversation) {
-      // New lead + new conversation
+      // Upsert lead (unique on phone — prevents duplicate leads from race conditions)
       const leadInsert: Record<string, unknown> = {
         phone,
         name: msg.senderName || null,
@@ -61,36 +61,68 @@ export async function POST(req: NextRequest) {
 
       const { data: newLead, error: leadError } = await supabase
         .from("leads")
-        .insert(leadInsert)
+        .upsert(leadInsert, { onConflict: "phone", ignoreDuplicates: true })
         .select()
         .single();
 
       if (leadError) {
-        console.error("[Webhook] Error creating lead:", leadError);
-        return ok({ detail: "lead_creation_failed" });
+        // If upsert fails, try to fetch existing lead
+        const { data: existingLead } = await supabase
+          .from("leads")
+          .select("*")
+          .eq("phone", phone)
+          .maybeSingle();
+        if (existingLead) {
+          lead = existingLead;
+        } else {
+          console.error("[Webhook] Error creating lead:", leadError);
+          return ok({ detail: "lead_creation_failed" });
+        }
+      } else {
+        lead = newLead;
       }
-      lead = newLead;
 
-      const { data: newConv, error: convError } = await supabase
+      // Check again for conversation (another webhook may have created it)
+      const { data: raceConv } = await supabase
         .from("conversations")
-        .insert({
-          lead_id: newLead.id,
-          phone,
-          bot_active: true,
-          current_step: "greeting",
-          qualification_data: {},
-          bot_messages_count: 0,
-          messages_count: 0,
-          last_message_at: new Date().toISOString(),
-        })
-        .select()
-        .single();
+        .select("*")
+        .eq("phone", phone)
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      if (convError) {
-        console.error("[Webhook] Error creating conversation:", convError);
-        return ok({ detail: "conversation_creation_failed" });
+      if (raceConv) {
+        conversation = raceConv;
+      } else {
+        const { data: newConv, error: convError } = await supabase
+          .from("conversations")
+          .insert({
+            lead_id: (lead as Record<string, unknown>).id,
+            phone,
+            bot_active: true,
+            current_step: "greeting",
+            qualification_data: {},
+            bot_messages_count: 0,
+            messages_count: 0,
+            last_message_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (convError) {
+          // Race condition: another call created it, fetch it
+          const { data: fallbackConv } = await supabase
+            .from("conversations")
+            .select("*")
+            .eq("phone", phone)
+            .order("started_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          conversation = fallbackConv;
+        } else {
+          conversation = newConv;
+        }
       }
-      conversation = newConv;
     } else {
       // Existing conversation - get lead
       const { data: existingLead } = await supabase
