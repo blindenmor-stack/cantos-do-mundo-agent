@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { parseWebhookPayload, getMessageContent, sendMultipleMessages } from "@/lib/zapi";
 import { processMessage, calculateScore, getQualificationStatus, generateHandoffSummary, type ConversationContext } from "@/lib/ai-agent";
+import { notifyHumanAgent } from "@/lib/notify";
 
 export const maxDuration = 60;
 
-const BUFFER_MS = 8000; // 8 seconds buffer to collect multiple messages
+const BUFFER_MS = 15000; // 15 seconds buffer — people send multiple short messages
 
 // Always return 200 to Z-API
 function ok(data: Record<string, unknown> = {}) {
@@ -332,6 +333,15 @@ export async function POST(req: NextRequest) {
           qualification_summary: convUpdate.handoff_summary,
         })
         .eq("id", lead.id);
+
+      // Notify human agent via WhatsApp
+      const status = getQualificationStatus(score);
+      await notifyHumanAgent(
+        status === "qualified" ? "qualified" : status === "warm" ? "warm" : "handoff",
+        result.updatedData.name || "Lead",
+        phone,
+        convUpdate.handoff_summary as string
+      );
     } else if (result.updatedData.name && !(lead.name as string)) {
       await supabase
         .from("leads")
