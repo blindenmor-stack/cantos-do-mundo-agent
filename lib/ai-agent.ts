@@ -145,42 +145,56 @@ export async function processMessage(
     else cleaned.push({ ...m });
   }
 
-  // Generate response
+  // Try to advance past steps that already have data (e.g., motive already mentioned)
+  let finalStep = currentStep;
+  for (let attempts = 0; attempts < 4; attempts++) {
+    const nextStep = advanceStep(finalStep, updatedData);
+    if (nextStep === finalStep) break;
+    finalStep = nextStep;
+  }
+
+  // Generate response — use templates for standard questions, AI only for dynamic responses
   let responses: string[];
-  try {
-    const { text } = await generateText({
-      model: anthropic("claude-sonnet-4-20250514"),
-      system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${currentStep}\nINSTRUÇÃO (siga à risca): ${instruction}\n\nDADOS JÁ COLETADOS (NÃO pergunte sobre nenhum desses):\n${formatCollectedData(updatedData)}\n\nPERGUNTAS PROIBIDAS (já tem resposta): ${getForbiddenQuestions(updatedData)}`,
-      messages: cleaned,
-    });
+  const finalInstruction = buildInstruction(finalStep, updatedData);
+  const templateResponse = getTemplateResponse(finalStep, updatedData, userMessage);
 
-    // Clean up response - remove any RESPONSE:/DATA: artifacts
-    let cleanText = text
-      .replace(/^RESPONSE:\s*/i, "")
-      .replace(/DATA:\s*\{[\s\S]*\}\s*$/i, "")
-      .trim();
+  if (templateResponse) {
+    responses = templateResponse;
+    console.log("[AI] Using template for step:", finalStep);
+  } else {
+    try {
+      const { text } = await generateText({
+        model: anthropic("claude-sonnet-4-20250514"),
+        system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${finalStep}\nINSTRUÇÃO (siga à risca): ${finalInstruction}\n\nDADOS JÁ COLETADOS (NÃO pergunte sobre nenhum desses):\n${formatCollectedData(updatedData)}\n\nPERGUNTAS PROIBIDAS (já tem resposta): ${getForbiddenQuestions(updatedData)}`,
+        messages: cleaned,
+      });
 
-    responses = cleanText
-      .split("|||")
-      .map((r) => r.trim())
-      .filter((r) => r.length > 0);
+      let cleanText = text
+        .replace(/^RESPONSE:\s*/i, "")
+        .replace(/DATA:\s*\{[\s\S]*\}\s*$/i, "")
+        .trim();
 
-    if (responses.length === 0) responses = [cleanText || "Me conta mais"];
-  } catch (error) {
-    console.error("[AI] Error:", error);
-    // Smart fallback based on step
-    responses = getFallbackResponse(currentStep, updatedData);
+      responses = cleanText
+        .split("|||")
+        .map((r) => r.trim())
+        .filter((r) => r.length > 0);
+
+      if (responses.length === 0) responses = [cleanText || "Me conta mais"];
+    } catch (error) {
+      console.error("[AI] Error:", error);
+      responses = getFallbackResponse(finalStep, updatedData);
+    }
   }
 
   // Check handoff
-  const shouldHandoff = currentStep === "handoff";
+  const shouldHandoff = finalStep === "handoff";
   let handoffReason: string | undefined;
   if (shouldHandoff) {
     const score = calculateScore(updatedData);
     handoffReason = `${getQualificationStatus(score)}_score_${score}`;
   }
 
-  return { responses, newStep: currentStep, updatedData, shouldHandoff, handoffReason };
+  return { responses, newStep: finalStep, updatedData, shouldHandoff, handoffReason };
 }
 
 // Extract data from user text using pattern matching (no AI call needed)
@@ -392,6 +406,50 @@ function getFallbackResponse(step: string, data: QualificationData): string[] {
       ];
     default:
       return ["Me conta mais sobre o que vocês buscam nessa viagem"];
+  }
+}
+
+// Template responses for standard questions — bypasses AI entirely
+function getTemplateResponse(step: string, data: QualificationData, userMessage: string): string[] | null {
+  const name = data.name || "";
+
+  switch (step) {
+    case "greeting":
+      return [
+        "Oii! Como vai? ☺️ Sou a Miry, consultora aqui da Cantos do Mundo.",
+        "Como posso te chamar?",
+      ];
+
+    case "passport":
+      return [`Perfeito${name ? " " + name : ""}! Vocês já possuem passaporte?`];
+
+    case "dates":
+      if (data.travel_dates) {
+        // Already have dates, skip to next
+        return null; // Let advanceStep handle it
+      }
+      return [`E pra quando vocês estão pensando em viajar?`];
+
+    case "motive":
+      if (data.travel_motive) {
+        return null; // Already has motive — let advanceStep skip to next
+      }
+      return [`Me conta, a viagem é pra alguma comemoração, férias, descanso?`];
+
+    case "budget":
+      return [`${name || "Vocês"}, têm ideia de quanto gostariam de investir nessa viagem, por pessoa? Pode ser um valor aproximado, pra gente já direcionar pro roteiro certo`];
+
+    case "closing":
+      return [
+        `Perfeito ${name}, já tenho tudo que preciso! Vou passar todas as informações pra Miriany, nossa especialista em roteiros. Logo mais ela te manda mensagem aqui por esse número mesmo`,
+        `Se quiser ir adiantando, pode mandar um áudio contando o que seria mais importante nessa viagem, tipos de passeios que gostam, o que não pode faltar... assim já chega tudo redondinho pra ela montar a proposta`,
+      ];
+
+    // Steps that need AI (dynamic comment about destination, etc)
+    case "destination":
+    case "people":
+    default:
+      return null; // Use AI for these
   }
 }
 
