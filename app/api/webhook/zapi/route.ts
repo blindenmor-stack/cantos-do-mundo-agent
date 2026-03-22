@@ -154,33 +154,27 @@ export async function POST(req: NextRequest) {
       return ok({ detail: "saved_human_mode" });
     }
 
-    // Handle audio/image/video directly (no AI needed)
-    if (msgType === "audio") {
+    // Handle pure audio (no text content at all) directly
+    // Only respond to audio if message has NO text — avoid false positives
+    if (msgType === "audio" && (!msgContent || msgContent === "[Áudio]")) {
       try {
         await sendMultipleMessages(phone, [
-          "Recebi teu áudio! Vou encaminhar pra nossa especialista ouvir com atenção. Se quiser adiantar algo por texto também, fica à vontade",
+          "Recebi teu áudio! Vou encaminhar pra nossa especialista. Se quiser adiantar algo por texto também, fica à vontade",
         ]);
         await supabase.from("messages").insert({
           conversation_id: conversation.id, lead_id: lead.id,
-          direction: "outgoing", content: "Recebi teu áudio! Vou encaminhar pra nossa especialista ouvir com atenção. Se quiser adiantar algo por texto também, fica à vontade",
+          direction: "outgoing", content: "Recebi teu áudio! Vou encaminhar pra nossa especialista. Se quiser adiantar algo por texto também, fica à vontade",
           message_type: "text", is_from_bot: true,
         });
       } catch (e) { console.error("[Webhook] Audio response error:", e); }
       return ok({ detail: "audio_handled" });
     }
 
-    if (msgType === "image") {
-      try {
-        await sendMultipleMessages(phone, [
-          "Que legal, recebi a imagem! Vou repassar pro nosso time",
-        ]);
-        await supabase.from("messages").insert({
-          conversation_id: conversation.id, lead_id: lead.id,
-          direction: "outgoing", content: "Que legal, recebi a imagem! Vou repassar pro nosso time",
-          message_type: "text", is_from_bot: true,
-        });
-      } catch (e) { console.error("[Webhook] Image response error:", e); }
-      return ok({ detail: "image_handled" });
+    // Images, videos, documents — save silently, don't respond immediately
+    // They'll be processed alongside text in the buffer
+    if (msgType === "image" || msgType === "video" || msgType === "document") {
+      console.log("[Webhook] Media message saved, will process in buffer:", msgType);
+      // Don't return here — let it flow into the buffer with other messages
     }
 
     // === STEP 4: Message buffer ===

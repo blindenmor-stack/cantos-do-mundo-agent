@@ -82,7 +82,15 @@ NÃO FAÇA:
 SE PEDIREM PREÇO:
 Diga algo como: "Os valores dependem muito do roteiro, datas e estilo de hospedagem que vocês preferem. A Miriany, nossa especialista, vai montar um orçamento personalizado certinho pra vocês." Depois continue o fluxo normalmente com a próxima pergunta pendente.
 
-IMPORTANTE: Se a pessoa já mencionou algo antes (como motivo da viagem), NÃO pergunte de novo. Confirme e avance.`;
+REGRA ABSOLUTA — NÃO REPETIR:
+Olhe os DADOS COLETADOS abaixo. Se um dado já existe, NUNCA pergunte sobre ele de novo. Exemplos:
+- Se travelers_count já tem valor → NÃO pergunte quantas pessoas
+- Se travel_dates já tem valor → NÃO pergunte quando vão viajar
+- Se has_passport já tem valor → NÃO pergunte sobre passaporte
+- Se travel_motive já tem valor → NÃO pergunte o motivo
+
+REGRA ABSOLUTA — UMA PERGUNTA:
+Faça EXATAMENTE 1 pergunta por mensagem. NUNCA duas. Se a instrução diz pra perguntar X, pergunte APENAS X e nada mais.`;
 
 export interface ConversationContext {
   conversationId: string;
@@ -142,7 +150,7 @@ export async function processMessage(
   try {
     const { text } = await generateText({
       model: anthropic("claude-sonnet-4-20250514"),
-      system: `${SYSTEM_PROMPT}\n\nETAPA: ${currentStep}\nINSTRUÇÃO: ${instruction}\nDADOS COLETADOS: ${JSON.stringify(updatedData)}`,
+      system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${currentStep}\nINSTRUÇÃO (siga à risca): ${instruction}\n\nDADOS JÁ COLETADOS (NÃO pergunte sobre nenhum desses):\n${formatCollectedData(updatedData)}\n\nPERGUNTAS PROIBIDAS (já tem resposta): ${getForbiddenQuestions(updatedData)}`,
       messages: cleaned,
     });
 
@@ -385,6 +393,33 @@ function getFallbackResponse(step: string, data: QualificationData): string[] {
     default:
       return ["Me conta mais sobre o que vocês buscam nessa viagem"];
   }
+}
+
+function formatCollectedData(data: QualificationData): string {
+  const lines: string[] = [];
+  if (data.name) lines.push(`- Nome: ${data.name}`);
+  if (data.destination) lines.push(`- Destino: ${data.destination}`);
+  if (data.travelers_count) lines.push(`- Viajantes: ${data.travelers_count} (${data.travelers_type || "?"})`);
+  if (data.has_passport !== undefined) lines.push(`- Passaporte: ${data.has_passport ? "Sim" : "Não"}`);
+  if (data.travel_dates) lines.push(`- Datas: ${data.travel_dates}`);
+  if (data.travel_motive) lines.push(`- Motivo: ${data.travel_motive}`);
+  if (data.budget_per_person) lines.push(`- Orçamento: ${data.budget_per_person}`);
+  if (data.first_time !== undefined) lines.push(`- Primeira vez: ${data.first_time ? "Sim" : "Não"}`);
+  if (data.extra_notes) lines.push(`- Notas: ${data.extra_notes}`);
+  return lines.length > 0 ? lines.join("\n") : "Nenhum dado coletado ainda";
+}
+
+function getForbiddenQuestions(data: QualificationData): string {
+  const forbidden: string[] = [];
+  if (data.name) forbidden.push("nome");
+  if (data.destination) forbidden.push("destino");
+  if (data.travelers_count) forbidden.push("quantas pessoas");
+  if (data.has_passport !== undefined) forbidden.push("passaporte");
+  if (data.travel_dates) forbidden.push("quando vai viajar / datas");
+  if (data.travel_motive) forbidden.push("motivo da viagem");
+  if (data.budget_per_person) forbidden.push("orçamento");
+  if (data.first_time !== undefined) forbidden.push("primeira vez");
+  return forbidden.length > 0 ? forbidden.join(", ") : "nenhuma";
 }
 
 export async function generateHandoffSummary(data: QualificationData, score: number): Promise<string> {
