@@ -275,24 +275,23 @@ function extractDataFromText(
       "nordeste": "Nordeste", "sul": "Sul do Brasil",
     };
 
-    // Try exact match first (longer phrases first)
+    // Try exact match first (longer phrases first) — scan ALL history
     const sortedKeys = Object.keys(destinations).sort((a, b) => b.length - a.length);
     for (const key of sortedKeys) {
-      if (lower.includes(key)) {
+      if (allUserText.includes(key)) {
         data.destination = destinations[key];
         break;
       }
     }
 
-    // Pattern-based extraction: "ir pra X", "conhecer X", "viajar pra X"
+    // Pattern-based extraction from all history
     if (!data.destination) {
       const patterns = [
-        /(?:ir|viajar|conhecer|visitar|quero|gostaria)\s+(?:pra|para|a|o)\s+(.{2,30?)(?:\.|,|!|\?|$)/i,
-        /(?:destino|lugar|pacote|roteiro)\s+(?:pra|para|de|em)\s+(.{2,30})(?:\.|,|!|\?|$)/i,
-        /(?:viagem|trip)\s+(?:pra|para|de|em)\s+(.{2,30})(?:\.|,|!|\?|$)/i,
+        /(?:ir|viajar|conhecer|visitar|quero|gostaria)\s+(?:pra|para|a|o)\s+(.{2,30})(?:\.|,|!|\?|\n|$)/i,
+        /(?:destino|lugar|pacote|roteiro)\s+(?:pra|para|de|em)\s+(.{2,30})(?:\.|,|!|\?|\n|$)/i,
       ];
       for (const pat of patterns) {
-        const match = lower.match(pat);
+        const match = allUserText.match(pat);
         if (match) {
           const extracted = match[1].trim().replace(/\s+mesmo$/, "").replace(/\s+por$/, "");
           if (extracted.length >= 2 && extracted.length <= 30) {
@@ -304,10 +303,10 @@ function extractDataFromText(
     }
   }
 
-  // Travelers count
+  // Travelers count — scan ALL history
   if (!data.travelers_count) {
     // Digit + pessoa/pessoas
-    const countMatch = text.match(/(\d+)\s*(?:pessoa|pessoas|adulto|adultos|viajante)/i);
+    const countMatch = allUserText.match(/(\d+)\s*(?:pessoa|pessoas|adulto|adultos|viajante)/i);
     if (countMatch) {
       data.travelers_count = parseInt(countMatch[1]);
     }
@@ -318,46 +317,39 @@ function extractDataFromText(
         uma: 1, duas: 2, dois: 2, três: 3, tres: 3, quatro: 4, cinco: 5, seis: 6,
       };
       for (const [word, num] of Object.entries(wordNums)) {
-        if (lower.includes(word + " pessoa") || lower.includes(word + " adulto")) {
+        if (allUserText.includes(word + " pessoa") || allUserText.includes(word + " adulto")) {
           data.travelers_count = num;
           break;
         }
       }
     }
 
-    // "eu e minha esposa/noiva/marido/namorada" = 2 people
+    // "eu e minha esposa/noiva/marido/namorada" = 2 people — scan ALL history
     if (!data.travelers_count) {
-      if (lower.match(/eu e m(?:inha|eu)\s+(?:esposa|noiva|marido|noivo|namorad[ao]|mulher|companheir[ao])/)) {
+      if (allUserText.match(/eu e m(?:inha|eu)\s+(?:esposa|noiva|marido|noivo|namorad[ao]|mulher|companheir[ao])/)) {
         data.travelers_count = 2;
         data.travelers_type = "couple";
-      } else if (lower.includes("casal") || lower.includes("nós dois") || lower.includes("a dois") || lower.includes("nós duas")) {
+      } else if (allUserText.includes("casal") || allUserText.includes("nós dois") || allUserText.includes("a dois") || allUserText.includes("nós duas")) {
         data.travelers_count = 2;
         data.travelers_type = "couple";
-      } else if (lower.match(/\b2\b/)) {
+      } else if (allUserText.match(/\bsomos\s+2\b/) || allUserText.match(/\bseriam\s+2\b/) || allUserText.match(/\bserao\s+2\b/) || lower.match(/\b2\b/)) {
         data.travelers_count = 2;
-      } else if (lower.includes("sozinho") || lower.includes("sozinha") || lower.includes("só eu")) {
+      } else if (allUserText.includes("sozinho") || allUserText.includes("sozinha") || allUserText.includes("só eu")) {
         data.travelers_count = 1;
         data.travelers_type = "solo";
-      } else if (lower.includes("família") || lower.includes("familia")) {
+      } else if (allUserText.includes("família") || allUserText.includes("familia")) {
         data.travelers_type = "family";
-      }
-    }
-
-    // Also check all user history for couple indicators
-    if (!data.travelers_count && !data.travelers_type) {
-      if (allUserText.match(/eu e m(?:inha|eu)\s+(?:esposa|noiva|marido|noivo|namorad[ao]|mulher)/)) {
-        data.travelers_count = 2;
-        data.travelers_type = "couple";
       }
     }
   }
 
-  // Travel dates
+  // Travel dates — scan ALL user history
   if (!data.travel_dates) {
     const monthNames = ["janeiro", "fevereiro", "março", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+    // Check allUserText (full history) not just current message
     for (const month of monthNames) {
-      if (lower.includes(month)) {
-        const yearMatch = text.match(/20\d{2}/);
+      if (allUserText.includes(month)) {
+        const yearMatch = allUserText.match(/20\d{2}/);
         data.travel_dates = yearMatch ? `${month} ${yearMatch[0]}` : month;
         break;
       }
@@ -405,12 +397,15 @@ function extractDataFromText(
     }
   }
 
-  // Budget
+  // Budget — scan all history
   if (!data.budget_per_person) {
-    const budgetMatch = text.match(/(\d[\d.,]*)\s*(?:mil|k|reais|R\$)/i);
+    const budgetMatch = allUserText.match(/(\d[\d.,]*)\s*(?:mil|k|reais|R\$|por pessoa)/i);
     if (budgetMatch) data.budget_per_person = budgetMatch[0];
-    const fullMatch = text.match(/R\$\s*[\d.,]+/);
+    const fullMatch = allUserText.match(/R\$\s*[\d.,]+/);
     if (fullMatch) data.budget_per_person = fullMatch[0];
+    // Match plain numbers after budget context: "em torno de 3000", "uns 2500"
+    const contextMatch = allUserText.match(/(?:torno de|mais ou menos|aproximadamente|uns|cerca de)\s*(\d[\d.,]*)/i);
+    if (contextMatch && !data.budget_per_person) data.budget_per_person = `R$ ${contextMatch[1]}`;
   }
 
   // Extra notes from longer messages
