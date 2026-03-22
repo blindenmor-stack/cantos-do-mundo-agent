@@ -277,6 +277,15 @@ function extractDataFromText(
     }
   }
 
+  // Auto-skip passport for national destinations
+  if (data.has_passport === undefined && data.destination) {
+    const destLower = data.destination.toLowerCase();
+    const nacional = ["brasil", "fernando de noronha", "noronha", "gramado", "florianópolis", "florianopolis", "rio de janeiro", "salvador", "recife", "natal", "fortaleza", "foz do iguaçu", "foz do iguacu", "bonito", "jericoacoara", "lençóis", "lencois", "chapada", "pantanal", "amazônia", "amazonia", "maragogi", "porto de galinhas", "arraial", "trancoso", "ilhabela", "paraty", "búzios", "buzios"];
+    if (nacional.some((n) => destLower.includes(n))) {
+      data.has_passport = true; // Mark as "not needed" to skip step
+    }
+  }
+
   // Passport
   if (data.has_passport === undefined) {
     if (lower.includes("sim") && (allUserText.includes("passaporte"))) {
@@ -420,8 +429,16 @@ function getTemplateResponse(step: string, data: QualificationData, userMessage:
         "Como posso te chamar?",
       ];
 
-    case "passport":
+    case "passport": {
+      // Only ask for passport if international destination
+      const dest = (data.destination || "").toLowerCase();
+      const nacional = ["brasil", "fernando de noronha", "noronha", "gramado", "florianópolis", "florianopolis", "rio de janeiro", "salvador", "recife", "natal", "fortaleza", "foz do iguaçu", "foz do iguacu", "bonito", "jericoacoara", "lençóis", "lencois", "chapada", "pantanal", "amazônia", "amazonia", "maragogi", "porto de galinhas", "arraial", "trancoso", "ilhabela", "paraty", "búzios", "buzios"];
+      if (nacional.some((n) => dest.includes(n))) {
+        // National trip — skip passport, mark as not needed
+        return null; // advanceStep will skip
+      }
       return [`Perfeito${name ? " " + name : ""}! Vocês já possuem passaporte?`];
+    }
 
     case "dates":
       if (data.travel_dates) {
