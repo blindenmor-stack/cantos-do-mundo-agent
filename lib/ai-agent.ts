@@ -60,7 +60,7 @@ export function getQualificationStatus(score: number): "qualified" | "warm" | "d
 }
 
 // Steps in order
-const STEPS = ["greeting", "destination", "people", "passport", "dates", "motive", "budget", "closing"] as const;
+const STEPS = ["greeting", "destination", "dates", "motive", "people", "budget", "closing"] as const;
 
 const SYSTEM_PROMPT = `Você é a Miry, consultora da Cantos do Mundo, agência de viagens com roteiros personalizados.
 
@@ -254,14 +254,49 @@ function extractDataFromText(
 
   // Travelers count
   if (!data.travelers_count) {
+    // Digit + pessoa/pessoas
     const countMatch = text.match(/(\d+)\s*(?:pessoa|pessoas|adulto|adultos|viajante)/i);
-    if (countMatch) data.travelers_count = parseInt(countMatch[1]);
-    else if (lower.includes("casal") || lower.includes("nós dois") || lower.includes("a dois") || lower.match(/\b2\b/)) {
-      data.travelers_count = 2;
-      data.travelers_type = "couple";
-    } else if (lower.includes("sozinho") || lower.includes("sozinha") || lower.includes("só eu")) {
-      data.travelers_count = 1;
-      data.travelers_type = "solo";
+    if (countMatch) {
+      data.travelers_count = parseInt(countMatch[1]);
+    }
+
+    // Word numbers: "duas pessoas", "três pessoas"
+    if (!data.travelers_count) {
+      const wordNums: Record<string, number> = {
+        uma: 1, duas: 2, dois: 2, três: 3, tres: 3, quatro: 4, cinco: 5, seis: 6,
+      };
+      for (const [word, num] of Object.entries(wordNums)) {
+        if (lower.includes(word + " pessoa") || lower.includes(word + " adulto")) {
+          data.travelers_count = num;
+          break;
+        }
+      }
+    }
+
+    // "eu e minha esposa/noiva/marido/namorada" = 2 people
+    if (!data.travelers_count) {
+      if (lower.match(/eu e m(?:inha|eu)\s+(?:esposa|noiva|marido|noivo|namorad[ao]|mulher|companheir[ao])/)) {
+        data.travelers_count = 2;
+        data.travelers_type = "couple";
+      } else if (lower.includes("casal") || lower.includes("nós dois") || lower.includes("a dois") || lower.includes("nós duas")) {
+        data.travelers_count = 2;
+        data.travelers_type = "couple";
+      } else if (lower.match(/\b2\b/)) {
+        data.travelers_count = 2;
+      } else if (lower.includes("sozinho") || lower.includes("sozinha") || lower.includes("só eu")) {
+        data.travelers_count = 1;
+        data.travelers_type = "solo";
+      } else if (lower.includes("família") || lower.includes("familia")) {
+        data.travelers_type = "family";
+      }
+    }
+
+    // Also check all user history for couple indicators
+    if (!data.travelers_count && !data.travelers_type) {
+      if (allUserText.match(/eu e m(?:inha|eu)\s+(?:esposa|noiva|marido|noivo|namorad[ao]|mulher)/)) {
+        data.travelers_count = 2;
+        data.travelers_type = "couple";
+      }
     }
   }
 
@@ -341,10 +376,9 @@ function advanceStep(currentStep: string, data: QualificationData): string {
   const stepChecks: Record<string, () => boolean> = {
     greeting: () => !!data.name,
     destination: () => !!data.destination,
-    people: () => !!data.travelers_count,
-    passport: () => data.has_passport !== undefined,
     dates: () => !!data.travel_dates,
     motive: () => !!data.travel_motive,
+    people: () => !!data.travelers_count,
     budget: () => !!data.budget_per_person,
     closing: () => true,
   };
@@ -369,26 +403,21 @@ function buildInstruction(step: string, data: QualificationData): string {
 
   switch (step) {
     case "greeting":
-      return "Mande 2 mensagens com |||. Primeira: 'Oii! Como vai? ☺️ Sou a Miry, consultora aqui da Cantos do Mundo.' Segunda: 'Como posso te chamar?'";
+      return "Template vai responder.";
     case "destination":
-      return `Cumprimente ${name} pelo nome. Pergunte qual destino tem interesse ou se veio de anúncio, referencie. Pergunte se é primeira vez. 1 mensagem.`;
-    case "people":
-      return `Comente algo positivo e curto sobre ${data.destination || "o destino"}. Pergunte quantas pessoas viajam. 1 mensagem.`;
-    case "passport":
-      return "Pergunte se já possuem passaporte. 1 mensagem.";
+      return `Cumprimente ${name} pelo nome de forma curta. Pergunte qual destino tem interesse. APENAS 1 pergunta. Máximo 2 linhas. SEM emojis.`;
     case "dates":
-      return "Pergunte quando pretendem viajar. 1 mensagem.";
+      return "Template vai responder.";
     case "motive":
-      if (data.travel_motive) {
-        return `O motivo já foi mencionado: "${data.travel_motive}". NÃO pergunte de novo. Apenas confirme rapidamente e pergunte sobre orçamento. Ex: "Que lindo, ${data.travel_motive}! E vocês tem ideia de quanto gostariam de investir nessa viagem, por pessoa?"`;
-      }
-      return `Pergunte o motivo da viagem: comemoração, férias, descanso? 1 mensagem.`;
+      return "Template vai responder.";
+    case "people":
+      return "Template vai responder.";
     case "budget":
-      return `Pergunte: "${name}, vocês tem ideia de quanto gostariam de investir nessa viagem, por pessoa? Pode ser um valor aproximado, pra gente já direcionar pro roteiro certo." 1 mensagem. SEM emojis.`;
+      return "Template vai responder.";
     case "closing":
-      return `Mande 2 mensagens com |||. Primeira: "Perfeito ${name}, já tenho tudo que preciso! Vou passar todas as informações pra Miriany, nossa especialista em roteiros. Logo mais ela te manda mensagem aqui por esse número mesmo." Segunda: "Se quiser ir adiantando, pode mandar um áudio contando o que seria mais importante nessa viagem, tipos de passeios que gostam, o que não pode faltar... assim já chega tudo redondinho pra ela montar a proposta." SEM emojis.`;
+      return "Template vai responder.";
     default:
-      return "Continue a conversa naturalmente, faça a próxima pergunta do fluxo. 1 mensagem. Sem emojis.";
+      return `Responda de forma curta e natural. Faça APENAS 1 pergunta. SEM emojis. Dados já coletados: ${JSON.stringify(data)}`;
   }
 }
 
@@ -397,29 +426,27 @@ function getFallbackResponse(step: string, data: QualificationData): string[] {
     case "greeting":
       return ["Oii! Como vai? ☺️ Sou a Miry, consultora aqui da Cantos do Mundo.", "Como posso te chamar?"];
     case "destination":
-      return [`Prazer, ${data.name || ""}! Me conta, qual destino despertou seu interesse?`];
-    case "people":
-      return ["E seria pra quantas pessoas essa viagem?"];
-    case "passport":
-      return ["Vocês já possuem passaporte?"];
+      return [`Prazer, ${data.name || ""}! Me conta, qual destino te interessa?`];
     case "dates":
       return ["E pra quando vocês estão pensando em viajar?"];
     case "motive":
       return ["Me conta, a viagem é pra alguma comemoração, férias, descanso?"];
+    case "people":
+      return ["Seria pra quantas pessoas essa viagem?"];
     case "budget":
-      return [`${data.name || "Vocês"}, tem ideia de quanto gostariam de investir por pessoa?`];
+      return [`${data.name || "Vocês"}, têm ideia de quanto gostariam de investir por pessoa?`];
     case "closing":
       return [
         `Perfeito ${data.name || ""}! Vou passar tudo pra Miriany, nossa especialista. Logo mais ela te manda mensagem aqui por esse número`,
         "Se quiser ir adiantando, pode mandar um áudio contando o que seria mais importante nessa viagem",
       ];
     default:
-      return ["Me conta mais sobre o que vocês buscam nessa viagem"];
+      return ["Me conta mais sobre o que vocês buscam"];
   }
 }
 
 // Template responses for standard questions — bypasses AI entirely
-function getTemplateResponse(step: string, data: QualificationData, userMessage: string): string[] | null {
+function getTemplateResponse(step: string, data: QualificationData, _userMessage: string): string[] | null {
   const name = data.name || "";
 
   switch (step) {
@@ -429,32 +456,20 @@ function getTemplateResponse(step: string, data: QualificationData, userMessage:
         "Como posso te chamar?",
       ];
 
-    case "passport": {
-      // Only ask for passport if international destination
-      const dest = (data.destination || "").toLowerCase();
-      const nacional = ["brasil", "fernando de noronha", "noronha", "gramado", "florianópolis", "florianopolis", "rio de janeiro", "salvador", "recife", "natal", "fortaleza", "foz do iguaçu", "foz do iguacu", "bonito", "jericoacoara", "lençóis", "lencois", "chapada", "pantanal", "amazônia", "amazonia", "maragogi", "porto de galinhas", "arraial", "trancoso", "ilhabela", "paraty", "búzios", "buzios"];
-      if (nacional.some((n) => dest.includes(n))) {
-        // National trip — skip passport, mark as not needed
-        return null; // advanceStep will skip
-      }
-      return [`Perfeito${name ? " " + name : ""}! Vocês já possuem passaporte?`];
-    }
-
     case "dates":
-      if (data.travel_dates) {
-        // Already have dates, skip to next
-        return null; // Let advanceStep handle it
-      }
+      if (data.travel_dates) return null;
       return [`E pra quando vocês estão pensando em viajar?`];
 
     case "motive":
-      if (data.travel_motive) {
-        return null; // Already has motive — let advanceStep skip to next
-      }
-      return [`Me conta, a viagem é pra alguma comemoração, férias, descanso?`];
+      if (data.travel_motive) return null;
+      return [`Me conta${name ? " " + name : ""}, a viagem é pra alguma comemoração, férias, descanso?`];
+
+    case "people":
+      if (data.travelers_count) return null;
+      return [`Seria pra quantas pessoas essa viagem?`];
 
     case "budget":
-      return [`${name || "Vocês"}, têm ideia de quanto gostariam de investir nessa viagem, por pessoa? Pode ser um valor aproximado, pra gente já direcionar pro roteiro certo`];
+      return [`${name || "Vocês"}, têm ideia de quanto gostariam de investir nessa viagem, por pessoa? Pode ser um valor aproximado`];
 
     case "closing":
       return [
@@ -462,11 +477,10 @@ function getTemplateResponse(step: string, data: QualificationData, userMessage:
         `Se quiser ir adiantando, pode mandar um áudio contando o que seria mais importante nessa viagem, tipos de passeios que gostam, o que não pode faltar... assim já chega tudo redondinho pra ela montar a proposta`,
       ];
 
-    // Steps that need AI (dynamic comment about destination, etc)
+    // Only destination uses AI (needs dynamic comment about the destination)
     case "destination":
-    case "people":
     default:
-      return null; // Use AI for these
+      return null;
   }
 }
 
