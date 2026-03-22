@@ -229,26 +229,78 @@ function extractDataFromText(
     }
   }
 
-  // Destination
+  // Destination — comprehensive list + pattern extraction
   if (!data.destination) {
-    const destinations = [
-      "europa", "itália", "italia", "roma", "paris", "frança", "franca",
-      "portugal", "lisboa", "espanha", "madri", "barcelona",
-      "grécia", "grecia", "turquia", "toscana", "patagônia", "patagonia",
-      "caribe", "punta cana", "cancun", "cancún", "maldivas",
-      "egito", "marrocos", "japão", "japao", "tailândia", "tailandia",
-      "eua", "estados unidos", "nova york", "miami", "orlando",
-      "bariloche", "argentina", "chile", "peru", "machu picchu",
-      "africa", "áfrica", "dubai", "maldivas", "bali", "croácia", "croacia",
-    ];
-    for (const dest of destinations) {
-      if (lower.includes(dest)) {
-        data.destination = dest.charAt(0).toUpperCase() + dest.slice(1);
+    const destinations: Record<string, string> = {
+      // Internacional
+      "europa": "Europa", "eurotrip": "Europa", "euro trip": "Europa",
+      "itália": "Itália", "italia": "Itália", "roma": "Roma", "toscana": "Toscana",
+      "paris": "Paris", "frança": "França", "franca": "França",
+      "portugal": "Portugal", "lisboa": "Lisboa", "porto": "Porto",
+      "espanha": "Espanha", "madri": "Madri", "barcelona": "Barcelona",
+      "grécia": "Grécia", "grecia": "Grécia", "santorini": "Santorini",
+      "turquia": "Turquia", "capadócia": "Capadócia", "capadocia": "Capadócia",
+      "croácia": "Croácia", "croacia": "Croácia",
+      "patagônia": "Patagônia", "patagonia": "Patagônia",
+      "caribe": "Caribe", "punta cana": "Punta Cana", "cancun": "Cancún", "cancún": "Cancún",
+      "maldivas": "Maldivas", "egito": "Egito", "marrocos": "Marrocos",
+      "japão": "Japão", "japao": "Japão", "tailândia": "Tailândia", "tailandia": "Tailândia",
+      "eua": "EUA", "estados unidos": "EUA", "nova york": "Nova York", "miami": "Miami", "orlando": "Orlando",
+      "bariloche": "Bariloche", "argentina": "Argentina", "chile": "Chile",
+      "peru": "Peru", "machu picchu": "Machu Picchu",
+      "africa": "África", "áfrica": "África", "dubai": "Dubai", "bali": "Bali",
+      "méxico": "México", "mexico": "México", "londres": "Londres", "amsterdam": "Amsterdam",
+      "suíça": "Suíça", "suica": "Suíça", "áustria": "Áustria", "austria": "Áustria",
+      // Nacional
+      "bahia": "Bahia", "salvador": "Salvador",
+      "porto seguro": "Porto Seguro", "morro de são paulo": "Morro de São Paulo",
+      "fernando de noronha": "Fernando de Noronha", "noronha": "Fernando de Noronha",
+      "gramado": "Gramado", "canela": "Canela",
+      "florianópolis": "Florianópolis", "florianopolis": "Florianópolis", "floripa": "Florianópolis",
+      "rio de janeiro": "Rio de Janeiro",
+      "natal": "Natal", "recife": "Recife", "fortaleza": "Fortaleza",
+      "foz do iguaçu": "Foz do Iguaçu", "foz do iguacu": "Foz do Iguaçu",
+      "bonito": "Bonito", "jericoacoara": "Jericoacoara", "jeri": "Jericoacoara",
+      "chapada diamantina": "Chapada Diamantina", "chapada": "Chapada",
+      "pantanal": "Pantanal", "amazônia": "Amazônia", "amazonia": "Amazônia",
+      "maragogi": "Maragogi", "porto de galinhas": "Porto de Galinhas",
+      "arraial d'ajuda": "Arraial d'Ajuda", "arraial": "Arraial",
+      "trancoso": "Trancoso", "ilhabela": "Ilhabela",
+      "paraty": "Paraty", "búzios": "Búzios", "buzios": "Búzios",
+      "lençóis maranhenses": "Lençóis Maranhenses", "lençóis": "Lençóis",
+      "são paulo": "São Paulo", "minas gerais": "Minas Gerais",
+      "caldas novas": "Caldas Novas", "serra gaúcha": "Serra Gaúcha",
+      "costa do sauípe": "Costa do Sauípe", "praia do forte": "Praia do Forte",
+      "costa do descobrimento": "Costa do Descobrimento",
+      "nordeste": "Nordeste", "sul": "Sul do Brasil",
+    };
+
+    // Try exact match first (longer phrases first)
+    const sortedKeys = Object.keys(destinations).sort((a, b) => b.length - a.length);
+    for (const key of sortedKeys) {
+      if (lower.includes(key)) {
+        data.destination = destinations[key];
         break;
       }
     }
-    if (!data.destination && (lower.includes("eurotrip") || lower.includes("euro trip"))) {
-      data.destination = "Europa (Eurotrip)";
+
+    // Pattern-based extraction: "ir pra X", "conhecer X", "viajar pra X"
+    if (!data.destination) {
+      const patterns = [
+        /(?:ir|viajar|conhecer|visitar|quero|gostaria)\s+(?:pra|para|a|o)\s+(.{2,30?)(?:\.|,|!|\?|$)/i,
+        /(?:destino|lugar|pacote|roteiro)\s+(?:pra|para|de|em)\s+(.{2,30})(?:\.|,|!|\?|$)/i,
+        /(?:viagem|trip)\s+(?:pra|para|de|em)\s+(.{2,30})(?:\.|,|!|\?|$)/i,
+      ];
+      for (const pat of patterns) {
+        const match = lower.match(pat);
+        if (match) {
+          const extracted = match[1].trim().replace(/\s+mesmo$/, "").replace(/\s+por$/, "");
+          if (extracted.length >= 2 && extracted.length <= 30) {
+            data.destination = extracted.charAt(0).toUpperCase() + extracted.slice(1);
+            break;
+          }
+        }
+      }
     }
   }
 
