@@ -13,12 +13,32 @@ function ok(data: Record<string, unknown> = {}) {
   return NextResponse.json({ status: "ok", ...data });
 }
 
+// Structured error logging
+function logError(phase: string, detail: Record<string, unknown>, error?: unknown) {
+  const entry = {
+    level: "ERROR",
+    phase,
+    ...detail,
+    error: error ? String(error) : undefined,
+    stack: error instanceof Error ? error.stack?.split("\n").slice(0, 3).join(" | ") : undefined,
+    ts: new Date().toISOString(),
+  };
+  console.error("[Webhook]", JSON.stringify(entry));
+}
+
+function logInfo(phase: string, detail: Record<string, unknown>) {
+  console.log("[Webhook]", JSON.stringify({ level: "INFO", phase, ...detail, ts: new Date().toISOString() }));
+}
+
 export async function POST(req: NextRequest) {
+  const startTime = Date.now();
+  let phone = "unknown";
+
   try {
     const body = await req.json();
     const supabase = getSupabase();
 
-    console.log("[Webhook] Received:", JSON.stringify(body).slice(0, 500));
+    logInfo("received", { payload: JSON.stringify(body).slice(0, 300) });
 
     const msg = parseWebhookPayload(body);
     if (!msg) return ok({ detail: "ignored" });
@@ -26,7 +46,7 @@ export async function POST(req: NextRequest) {
     const { type: msgType, content: msgContent } = getMessageContent(msg);
     if (!msgContent && msgType === "unknown") return ok({ detail: "no_content" });
 
-    const phone = msg.phone.replace(/\D/g, "");
+    phone = msg.phone.replace(/\D/g, "");
 
     // === STEP 1: Find or create conversation ===
     const { data: existingConv } = await supabase
@@ -75,7 +95,7 @@ export async function POST(req: NextRequest) {
         if (existingLead) {
           lead = existingLead;
         } else {
-          console.error("[Webhook] Error creating lead:", leadError);
+          logError("lead_create", { phone }, leadError);
           return ok({ detail: "lead_creation_failed" });
         }
       } else {
@@ -145,7 +165,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!conversation || !lead) {
-      console.error("[Webhook] Failed to resolve conversation or lead");
+      logError("resolve", { phone, hasConv: !!conversation, hasLead: !!lead });
       return ok({ detail: "resolution_failed" });
     }
 
@@ -158,13 +178,13 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
 
       if (existingMsg) {
-        console.log("[Webhook] Duplicate messageId, skipping:", msg.messageId);
+        logInfo("dedup", { phone, messageId: msg.messageId });
         return ok({ detail: "duplicate" });
       }
     }
 
     // === STEP 3: Save incoming message immediately ===
-    await supabase.from("messages").insert({
+    const { error: msgInsertErr } = await supabase.from("messages").insert({
       conversation_id: conversation.id,
       lead_id: lead.id,
       direction: "incoming",
@@ -174,6 +194,9 @@ export async function POST(req: NextRequest) {
       zapi_message_id: msg.messageId,
       metadata: msg.referral ? { referral: msg.referral } : {},
     });
+    if (msgInsertErr) {
+      logError("msg_insert", { phone, convId: conversation.id }, msgInsertErr);
+    }
 
     // Update last_message_at
     await supabase
@@ -181,13 +204,18 @@ export async function POST(req: NextRequest) {
       .update({ last_message_at: new Date().toISOString() })
       .eq("id", conversation.id);
 
-    // If bot is not active, just save
-    if (!conversation.bot_active) {
+    // Re-read bot_active (may have been toggled by dashboard or another webhook)
+    const { data: botCheck } = await supabase
+      .from("conversations")
+      .select("bot_active")
+      .eq("id", conversation.id)
+      .single();
+
+    if (!botCheck?.bot_active) {
       return ok({ detail: "saved_human_mode" });
     }
 
     // Handle pure audio (no text content at all) directly
-    // Only respond to audio if message has NO text — avoid false positives
     if (msgType === "audio" && (!msgContent || msgContent === "[Áudio]")) {
       try {
         await sendMultipleMessages(phone, [
@@ -198,20 +226,16 @@ export async function POST(req: NextRequest) {
           direction: "outgoing", content: "Recebi teu áudio! Vou encaminhar pra nossa especialista. Se quiser adiantar algo por texto também, fica à vontade",
           message_type: "text", is_from_bot: true,
         });
-      } catch (e) { console.error("[Webhook] Audio response error:", e); }
+      } catch (e) { logError("audio_response", { phone }, e); }
       return ok({ detail: "audio_handled" });
     }
 
     // Images, videos, documents — save silently, don't respond immediately
-    // They'll be processed alongside text in the buffer
     if (msgType === "image" || msgType === "video" || msgType === "document") {
-      console.log("[Webhook] Media message saved, will process in buffer:", msgType);
-      // Don't return here — let it flow into the buffer with other messages
+      logInfo("media_saved", { phone, type: msgType });
     }
 
     // === STEP 4: Message buffer ===
-    // Use context_summary to store the processing lock timestamp
-    // Re-read fresh to avoid race conditions
     const { data: freshCheck } = await supabase
       .from("conversations")
       .select("context_summary")
@@ -223,24 +247,27 @@ export async function POST(req: NextRequest) {
       ? parseInt(freshCheck.context_summary, 10)
       : 0;
 
-    if (scheduledAt > 0 && now - scheduledAt < BUFFER_MS + 3000) {
+    if (scheduledAt > 0 && now - scheduledAt < BUFFER_MS + 5000) {
       // Another call is already waiting — just save and return
-      console.log("[Webhook] Buffer active, message saved, skipping processing");
+      logInfo("buffered", { phone, scheduledAge: now - scheduledAt });
       return ok({ detail: "buffered" });
     }
 
     // Mark that we're scheduling processing
-    await supabase
+    const { error: lockErr } = await supabase
       .from("conversations")
       .update({ context_summary: String(now) })
       .eq("id", conversation.id);
+    if (lockErr) {
+      logError("buffer_lock", { phone }, lockErr);
+    }
 
     // Wait for buffer period to collect more messages
-    console.log("[Webhook] Waiting buffer:", BUFFER_MS, "ms");
+    logInfo("buffer_wait", { phone, bufferMs: BUFFER_MS });
     await new Promise((r) => setTimeout(r, BUFFER_MS));
 
-    // === STEP 4: Collect all unprocessed messages and process ===
-    // Re-fetch conversation (may have been updated by other webhook calls)
+    // === STEP 5: Process after buffer ===
+    // Re-fetch conversation fresh
     const { data: freshConv } = await supabase
       .from("conversations")
       .select("*")
@@ -248,17 +275,26 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (!freshConv || !freshConv.bot_active) {
+      logInfo("bot_disabled", { phone, hasConv: !!freshConv, botActive: freshConv?.bot_active });
       return ok({ detail: "bot_disabled_during_buffer" });
     }
 
-    // Check if WE are the one who should process (our timestamp matches)
+    // Check if WE are the one who should process
     const currentScheduled = freshConv.context_summary
       ? parseInt(freshConv.context_summary, 10)
       : 0;
+
     if (currentScheduled !== now) {
-      // A newer webhook call took over — let it handle processing
-      console.log("[Webhook] Newer buffer took over, skipping");
-      return ok({ detail: "superseded" });
+      // A newer webhook set a different lock — but ONLY skip if the newer one
+      // is actually still pending (hasn't expired). Otherwise, WE should process.
+      const newerAge = Date.now() - currentScheduled;
+      if (currentScheduled > now && newerAge < BUFFER_MS + 5000) {
+        logInfo("superseded", { phone, ourTs: now, currentTs: currentScheduled, newerAge });
+        return ok({ detail: "superseded" });
+      }
+      // The lock is stale or ours was overwritten but the newer one already finished
+      // — we should process to avoid dropped messages
+      logInfo("stale_lock_recovery", { phone, ourTs: now, currentTs: currentScheduled, newerAge });
     }
 
     // Clear the lock
@@ -270,10 +306,10 @@ export async function POST(req: NextRequest) {
     // Get conversation history (includes all buffered messages)
     const { data: history } = await supabase
       .from("messages")
-      .select("direction, content, is_from_bot")
+      .select("direction, content, is_from_bot, created_at")
       .eq("conversation_id", conversation.id)
       .order("created_at", { ascending: true })
-      .limit(20);
+      .limit(30);
 
     const messagesHistory = (history || [])
       .filter((m) => m.content)
@@ -288,12 +324,23 @@ export async function POST(req: NextRequest) {
       if (messagesHistory[i].role === "user") {
         recentUserMsgs.unshift(messagesHistory[i].content);
       } else {
-        break; // Stop at first bot message
+        break;
       }
     }
     const combinedUserMessage = recentUserMsgs.join("\n");
 
-    console.log("[Webhook] Processing combined message:", combinedUserMessage.slice(0, 200));
+    if (!combinedUserMessage.trim()) {
+      logInfo("empty_combined", { phone, historyLen: messagesHistory.length });
+      return ok({ detail: "no_user_message" });
+    }
+
+    logInfo("processing", {
+      phone,
+      step: freshConv.current_step,
+      combined: combinedUserMessage.slice(0, 200),
+      bufferedCount: recentUserMsgs.length,
+      qualData: JSON.stringify(freshConv.qualification_data).slice(0, 200),
+    });
 
     // Process with AI
     const context: ConversationContext = {
@@ -307,17 +354,26 @@ export async function POST(req: NextRequest) {
 
     const result = await processMessage(combinedUserMessage, context);
 
+    logInfo("ai_result", {
+      phone,
+      newStep: result.newStep,
+      handoff: result.shouldHandoff,
+      responses: result.responses.length,
+      updatedData: JSON.stringify(result.updatedData).slice(0, 300),
+    });
+
     // Send responses
     if (result.responses.length > 0) {
       try {
         await sendMultipleMessages(phone, result.responses);
+        logInfo("sent", { phone, count: result.responses.length });
       } catch (sendError) {
-        console.error("[Webhook] Error sending:", sendError);
+        logError("send_messages", { phone, responses: result.responses.length }, sendError);
       }
 
       // Save bot messages
       for (const response of result.responses) {
-        await supabase.from("messages").insert({
+        const { error: botMsgErr } = await supabase.from("messages").insert({
           conversation_id: conversation.id,
           lead_id: lead.id,
           direction: "outgoing",
@@ -325,10 +381,13 @@ export async function POST(req: NextRequest) {
           message_type: "text",
           is_from_bot: true,
         });
+        if (botMsgErr) {
+          logError("bot_msg_insert", { phone, convId: conversation.id }, botMsgErr);
+        }
       }
     }
 
-    // Update conversation
+    // Update conversation — THIS IS CRITICAL, must succeed
     const convUpdate: Record<string, unknown> = {
       current_step: result.newStep,
       qualification_data: result.updatedData,
@@ -345,7 +404,7 @@ export async function POST(req: NextRequest) {
       const score = calculateScore(result.updatedData);
       convUpdate.handoff_summary = await generateHandoffSummary(result.updatedData, score);
 
-      await supabase
+      const { error: leadUpdateErr } = await supabase
         .from("leads")
         .update({
           name: result.updatedData.name || (lead.name as string),
@@ -354,11 +413,16 @@ export async function POST(req: NextRequest) {
           travelers_count: result.updatedData.travelers_count,
           travelers_type: result.updatedData.travelers_type,
           travel_style: result.updatedData.travel_motive,
+          budget_range: result.updatedData.budget_per_person,
           qualification_score: score,
           qualification_status: getQualificationStatus(score),
           qualification_summary: convUpdate.handoff_summary,
         })
         .eq("id", lead.id);
+
+      if (leadUpdateErr) {
+        logError("lead_update_handoff", { phone, leadId: lead.id, score }, leadUpdateErr);
+      }
 
       // Notify human agent via WhatsApp
       const status = getQualificationStatus(score);
@@ -375,14 +439,46 @@ export async function POST(req: NextRequest) {
         .eq("id", lead.id);
     }
 
-    await supabase
+    // Critical update — retry once on failure
+    const { error: convUpdateErr } = await supabase
       .from("conversations")
       .update(convUpdate)
       .eq("id", conversation.id);
 
-    return ok({ detail: "processed", buffered_messages: recentUserMsgs.length });
+    if (convUpdateErr) {
+      logError("conv_update", {
+        phone,
+        convId: conversation.id,
+        newStep: result.newStep,
+        update: JSON.stringify(convUpdate).slice(0, 500),
+      }, convUpdateErr);
+
+      // Retry with minimal update (step + data only)
+      const { error: retryErr } = await supabase
+        .from("conversations")
+        .update({
+          current_step: result.newStep,
+          qualification_data: result.updatedData,
+        })
+        .eq("id", conversation.id);
+
+      if (retryErr) {
+        logError("conv_update_retry", { phone, convId: conversation.id }, retryErr);
+      } else {
+        logInfo("conv_update_retry_ok", { phone, newStep: result.newStep });
+      }
+    }
+
+    logInfo("done", {
+      phone,
+      step: result.newStep,
+      handoff: result.shouldHandoff,
+      elapsed: Date.now() - startTime,
+    });
+
+    return ok({ detail: "processed", buffered_messages: recentUserMsgs.length, step: result.newStep });
   } catch (error) {
-    console.error("[Webhook] Unhandled error:", error);
+    logError("unhandled", { phone, elapsed: Date.now() - startTime }, error);
     return ok({ detail: "error", message: String(error) });
   }
 }

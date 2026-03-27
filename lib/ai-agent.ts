@@ -140,6 +140,14 @@ export async function processMessage(
   shouldHandoff: boolean;
   handoffReason?: string;
 }> {
+  console.log("[AI] processMessage input:", JSON.stringify({
+    userMessage: userMessage.slice(0, 200),
+    currentStep: context.currentStep,
+    qualData: context.qualificationData,
+    botMsgs: context.botMessagesCount,
+    historyLen: context.messagesHistory.length,
+  }));
+
   // Force handoff after 15 bot messages
   if (context.botMessagesCount >= 15) {
     return {
@@ -152,13 +160,16 @@ export async function processMessage(
   }
 
   // Extract data from user message FIRST (simple, no AI needed)
+  // This scans ALL message history, so it catches data even if step is out of sync
   const updatedData = extractDataFromText(userMessage, context.qualificationData, context.messagesHistory);
 
-  // Advance step based on collected data
-  const currentStep = advanceStep(context.currentStep, updatedData);
+  console.log("[AI] Extracted data:", JSON.stringify(updatedData));
 
-  // Build instruction for this step
-  const instruction = buildInstruction(currentStep, updatedData);
+  // Find the REAL current step based on collected data (not just DB step)
+  // This fixes desync: if DB says "dates" but we already have travel_dates, skip ahead
+  let realStep = findFirstIncompleteStep(updatedData);
+
+  console.log("[AI] Step resolution: db=" + context.currentStep + " → real=" + realStep);
 
   // Build clean message history
   let msgs: { role: "user" | "assistant"; content: string }[] = context.messagesHistory.slice(-10);
@@ -174,27 +185,19 @@ export async function processMessage(
     else cleaned.push({ ...m });
   }
 
-  // Try to advance past steps that already have data (e.g., motive already mentioned)
-  let finalStep = currentStep;
-  for (let attempts = 0; attempts < 4; attempts++) {
-    const nextStep = advanceStep(finalStep, updatedData);
-    if (nextStep === finalStep) break;
-    finalStep = nextStep;
-  }
-
   // Generate response — use templates for standard questions, AI only for dynamic responses
   let responses: string[];
-  const finalInstruction = buildInstruction(finalStep, updatedData);
-  const templateResponse = getTemplateResponse(finalStep, updatedData, userMessage);
+  const finalInstruction = buildInstruction(realStep, updatedData);
+  const templateResponse = getTemplateResponse(realStep, updatedData, userMessage);
 
   if (templateResponse) {
     responses = templateResponse;
-    console.log("[AI] Using template for step:", finalStep);
+    console.log("[AI] Using template for step:", realStep);
   } else {
     try {
       const { text } = await generateText({
         model: anthropic("claude-sonnet-4-20250514"),
-        system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${finalStep}\nINSTRUÇÃO (siga à risca): ${finalInstruction}\n\nDADOS JÁ COLETADOS (NÃO pergunte sobre nenhum desses):\n${formatCollectedData(updatedData)}\n\nPERGUNTAS PROIBIDAS (já tem resposta): ${getForbiddenQuestions(updatedData)}`,
+        system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${realStep}\nINSTRUÇÃO (siga à risca): ${finalInstruction}\n\nDADOS JÁ COLETADOS (NÃO pergunte sobre nenhum desses):\n${formatCollectedData(updatedData)}\n\nPERGUNTAS PROIBIDAS (já tem resposta): ${getForbiddenQuestions(updatedData)}`,
         messages: cleaned,
       });
 
@@ -210,20 +213,27 @@ export async function processMessage(
 
       if (responses.length === 0) responses = [cleanText || "Me conta mais"];
     } catch (error) {
-      console.error("[AI] Error:", error);
-      responses = getFallbackResponse(finalStep, updatedData);
+      console.error("[AI] Error generating response:", error);
+      responses = getFallbackResponse(realStep, updatedData);
     }
   }
 
   // Check handoff — closing IS the handoff (sends the goodbye + triggers scoring)
-  const shouldHandoff = finalStep === "handoff" || finalStep === "closing";
+  const shouldHandoff = realStep === "handoff" || realStep === "closing";
   let handoffReason: string | undefined;
   if (shouldHandoff) {
     const score = calculateScore(updatedData);
     handoffReason = `${getQualificationStatus(score)}_score_${score}`;
   }
 
-  return { responses, newStep: finalStep, updatedData, shouldHandoff, handoffReason };
+  console.log("[AI] processMessage result:", JSON.stringify({
+    newStep: realStep,
+    handoff: shouldHandoff,
+    responses: responses.length,
+    responsesPreview: responses.map(r => r.slice(0, 60)),
+  }));
+
+  return { responses, newStep: realStep, updatedData, shouldHandoff, handoffReason };
 }
 
 // Extract data from user text using pattern matching (no AI call needed)
@@ -447,8 +457,9 @@ function extractDataFromText(
   return data;
 }
 
-// Advance to the next unfilled step
-function advanceStep(currentStep: string, data: QualificationData): string {
+// Find the first step that doesn't have data yet — scans from the beginning
+// This is the primary step resolution: ignores DB step entirely, just looks at data
+function findFirstIncompleteStep(data: QualificationData): string {
   const stepChecks: Record<string, () => boolean> = {
     greeting: () => !!data.name,
     destination: () => !!data.destination,
@@ -456,22 +467,14 @@ function advanceStep(currentStep: string, data: QualificationData): string {
     motive: () => !!data.travel_motive,
     people: () => !!data.travelers_count,
     budget: () => !!data.budget_per_person,
-    closing: () => true,
   };
 
-  // If current step is complete, find next incomplete step
-  const check = stepChecks[currentStep];
-  if (check && check()) {
-    const currentIdx = STEPS.indexOf(currentStep as typeof STEPS[number]);
-    for (let i = currentIdx + 1; i < STEPS.length; i++) {
-      const step = STEPS[i];
-      const stepCheck = stepChecks[step];
-      if (!stepCheck || !stepCheck()) return step;
-    }
-    return "closing";
+  for (const step of STEPS) {
+    if (step === "closing") return "closing"; // all prior steps passed
+    const check = stepChecks[step];
+    if (check && !check()) return step;
   }
-
-  return currentStep;
+  return "closing";
 }
 
 function buildInstruction(step: string, data: QualificationData): string {
