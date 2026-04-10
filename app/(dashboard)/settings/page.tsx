@@ -5,8 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -361,54 +359,6 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Agent behavior */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Comportamento do Agente</CardTitle>
-          <CardDescription>Ajustes finos do modelo e qualificação</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>Prompt do Sistema</Label>
-            <Textarea
-              value={agentConfig.system_prompt || ""}
-              onChange={(e) => setAgentConfig({ ...agentConfig, system_prompt: e.target.value })}
-              rows={6}
-              className="font-mono text-xs"
-            />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="space-y-2">
-              <Label>Score Qualificado (mín)</Label>
-              <Input
-                type="number"
-                value={agentConfig.qualification_threshold_qualified || "60"}
-                onChange={(e) => setAgentConfig({ ...agentConfig, qualification_threshold_qualified: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Score Morno (mín)</Label>
-              <Input
-                type="number"
-                value={agentConfig.qualification_threshold_warm || "30"}
-                onChange={(e) => setAgentConfig({ ...agentConfig, qualification_threshold_warm: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Máx Mensagens Bot</Label>
-              <Input
-                type="number"
-                value={agentConfig.max_bot_messages || "15"}
-                onChange={(e) => setAgentConfig({ ...agentConfig, max_bot_messages: e.target.value })}
-              />
-            </div>
-          </div>
-          <Button onClick={saveAgent} disabled={saving}>
-            <Save className="mr-2 h-4 w-4" />
-            Salvar agente
-          </Button>
-        </CardContent>
-      </Card>
     </div>
   );
 }
