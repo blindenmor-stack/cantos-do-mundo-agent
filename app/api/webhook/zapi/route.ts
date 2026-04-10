@@ -3,6 +3,7 @@ import { getSupabase } from "@/lib/supabase";
 import { parseWebhookPayload, getMessageContent, sendMultipleMessages } from "@/lib/zapi";
 import { processMessage, calculateScore, getQualificationStatus, generateHandoffSummary, type ConversationContext } from "@/lib/ai-agent";
 import { notifyHumanAgent } from "@/lib/notify";
+import { evaluateBotGate, logGateDecision } from "@/lib/bot-gate";
 
 export const maxDuration = 60;
 
@@ -114,12 +115,17 @@ export async function POST(req: NextRequest) {
       if (raceConv) {
         conversation = raceConv;
       } else {
+        // Bot gate: decide if bot should activate for this new conversation
+        const gate = await evaluateBotGate({ phone, hasReferral: !!msg.referral });
+        logInfo("bot_gate", { phone, decision: gate });
+
         const { data: newConv, error: convError } = await supabase
           .from("conversations")
           .insert({
             lead_id: (lead as Record<string, unknown>).id,
             phone,
-            bot_active: true,
+            bot_active: gate.shouldActivate,
+            source: gate.source,
             current_step: "greeting",
             qualification_data: {},
             bot_messages_count: 0,

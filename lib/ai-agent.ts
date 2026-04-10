@@ -1,5 +1,5 @@
 import { generateText } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { getSupabase } from "./supabase";
 
 export interface QualificationData {
   name?: string;
@@ -91,7 +91,41 @@ export function getQualificationStatus(score: number): "qualified" | "warm" | "d
 // Steps in order
 const STEPS = ["greeting", "destination", "dates", "motive", "people", "budget", "closing"] as const;
 
-const SYSTEM_PROMPT = `Você é a Miry, consultora da Cantos do Mundo, agência de viagens com roteiros personalizados.
+// Cache for system prompt override from DB (refreshed every 5 min)
+let cachedSystemPrompt: string | null = null;
+let cachedAt = 0;
+const PROMPT_CACHE_TTL = 5 * 60 * 1000;
+
+async function getSystemPrompt(): Promise<string> {
+  // Serve cached value if fresh
+  if (cachedSystemPrompt && Date.now() - cachedAt < PROMPT_CACHE_TTL) {
+    return cachedSystemPrompt;
+  }
+
+  try {
+    const supabase = getSupabase();
+    const { data } = await supabase
+      .from("agent_config")
+      .select("value")
+      .eq("key", "system_prompt_override")
+      .maybeSingle();
+
+    // Use override if present and non-empty, else default constant
+    if (data?.value && data.value.trim().length > 100) {
+      cachedSystemPrompt = data.value;
+      cachedAt = Date.now();
+      return data.value;
+    }
+  } catch (err) {
+    console.error("[AI] Failed to load system_prompt from config:", err);
+  }
+
+  cachedSystemPrompt = DEFAULT_SYSTEM_PROMPT;
+  cachedAt = Date.now();
+  return DEFAULT_SYSTEM_PROMPT;
+}
+
+const DEFAULT_SYSTEM_PROMPT = `Você é a Miry, consultora da Cantos do Mundo, agência de viagens com roteiros personalizados.
 
 TOM DE VOZ — copie exatamente:
 - Consultora brasileira real no WhatsApp
@@ -195,9 +229,10 @@ export async function processMessage(
     console.log("[AI] Using template for step:", realStep);
   } else {
     try {
+      const systemPrompt = await getSystemPrompt();
       const { text } = await generateText({
-        model: anthropic("claude-sonnet-4-20250514"),
-        system: `${SYSTEM_PROMPT}\n\nETAPA ATUAL: ${realStep}\nINSTRUÇÃO (siga à risca): ${finalInstruction}\n\nDADOS JÁ COLETADOS (NÃO pergunte sobre nenhum desses):\n${formatCollectedData(updatedData)}\n\nPERGUNTAS PROIBIDAS (já tem resposta): ${getForbiddenQuestions(updatedData)}`,
+        model: "anthropic/claude-sonnet-4.6",
+        system: `${systemPrompt}\n\nETAPA ATUAL: ${realStep}\nINSTRUÇÃO (siga à risca): ${finalInstruction}\n\nDADOS JÁ COLETADOS (NÃO pergunte sobre nenhum desses):\n${formatCollectedData(updatedData)}\n\nPERGUNTAS PROIBIDAS (já tem resposta): ${getForbiddenQuestions(updatedData)}`,
         messages: cleaned,
       });
 
@@ -252,17 +287,39 @@ function extractDataFromText(
 
   // Name (if greeting step and no name yet)
   if (!data.name) {
-    // Common patterns: "me chame de X", "sou o/a X", "meu nome é X", or just a first name
-    const namePatterns = [
-      /(?:me (?:chame?|chama) de |sou (?:o |a )?|meu nome [eé] |pode me chamar de )(\w+)/i,
-      /^(\w{2,15})(?:\s+(?:por favor|pfvr|pf))?$/i,
+    const stopwords = ["sim", "nao", "não", "oi", "ola", "olá", "opa", "bom", "boa", "tudo", "ok", "eai", "salve", "hello", "hi"];
+    const normalizeName = (raw: string): string =>
+      raw
+        .trim()
+        .split(/\s+/)
+        .slice(0, 4)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(" ");
+
+    // Pattern 1: explicit intro phrases — capture full name
+    const introPatterns = [
+      /(?:me\s+(?:chame?|chama)\s+de|sou\s+(?:o|a)?\s*|meu\s+nome\s+[eé]|pode\s+me\s+chamar\s+de|aqui\s+[eé]\s*(?:o|a)?)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40}?)(?:\.|,|!|\?|\n|$)/i,
     ];
-    for (const pat of namePatterns) {
+    for (const pat of introPatterns) {
       const match = text.match(pat);
-      if (match) {
-        const name = match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase();
-        if (!["sim", "nao", "não", "oi", "ola", "olá", "opa", "bom", "boa", "tudo", "ok"].includes(name.toLowerCase())) {
-          data.name = name;
+      if (match && match[1]) {
+        const cleaned = normalizeName(match[1]);
+        const firstWord = cleaned.split(" ")[0].toLowerCase();
+        if (cleaned.length >= 2 && !stopwords.includes(firstWord)) {
+          data.name = cleaned;
+          break;
+        }
+      }
+    }
+
+    // Pattern 2: standalone message that's just a name (1-4 words, letters only)
+    if (!data.name) {
+      const standalone = text.trim().match(/^([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+){0,3})(?:\s+(?:por\s+favor|pfvr|pf))?\s*[.!]?$/i);
+      if (standalone && standalone[1]) {
+        const cleaned = normalizeName(standalone[1]);
+        const firstWord = cleaned.split(" ")[0].toLowerCase();
+        if (cleaned.length >= 2 && cleaned.length <= 50 && !stopwords.includes(firstWord)) {
+          data.name = cleaned;
         }
       }
     }
