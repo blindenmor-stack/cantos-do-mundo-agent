@@ -63,34 +63,21 @@ async function buildHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
-// Determines correct send endpoint based on target type
+// Group detection — Z-API expects the FULL target format including "-group" suffix
+// Do NOT strip the suffix: groups must be sent as "120363XXX-group" for delivery
 function isGroup(target: string): boolean {
   return target.endsWith("-group") || target.includes("@g.us");
-}
-
-// Normalize group ID for Z-API (strip -group suffix if present)
-function normalizeTarget(target: string): string {
-  if (target.endsWith("-group")) return target.slice(0, -"-group".length);
-  if (target.endsWith("@g.us")) return target.slice(0, -"@g.us".length);
-  return target;
 }
 
 export async function sendText(target: string, message: string) {
   const base = await getBaseUrl();
   const headers = await buildHeaders();
 
-  // Both phone and group use /send-text in Z-API; groups need groupId or groupMessage
-  // Z-API infers type from phone value — send to /send-text for both
   const url = `${base}/send-text`;
-  const body: Record<string, unknown> = {
-    phone: normalizeTarget(target),
+  const body = {
+    phone: target, // Z-API needs the exact value (including "-group" suffix for groups)
     message,
   };
-
-  // Z-API needs isGroup flag for some instances; include when target is a group
-  if (isGroup(target)) {
-    body.phone = normalizeTarget(target);
-  }
 
   const res = await fetch(url, {
     method: "POST",
@@ -103,7 +90,9 @@ export async function sendText(target: string, message: string) {
     console.error("[Z-API] send-text error:", res.status, err, "target:", target);
     throw new Error(`Z-API send-text failed: ${res.status}`);
   }
-  return res.json();
+  const data = await res.json();
+  console.log(`[Z-API] sent to ${target}: messageId=${data.messageId || data.id || '?'}`);
+  return data;
 }
 
 export async function sendTyping(phone: string) {
@@ -116,7 +105,7 @@ export async function sendTyping(phone: string) {
     await fetch(url, {
       method: "POST",
       headers,
-      body: JSON.stringify({ phone: normalizeTarget(phone), state: "composing" }),
+      body: JSON.stringify({ phone, state: "composing" }),
     });
   } catch {
     // typing is best-effort, don't fail on errors

@@ -70,6 +70,7 @@ export async function notifyHumanAgent(
   leadPhone: string,
   summary: string
 ) {
+  console.log(`[Notify] notifyHumanAgent called: type=${type} lead=${leadName} phone=${leadPhone}`);
   const message = `${labelFor(type)}
 
 ${summary}
@@ -77,7 +78,12 @@ ${summary}
 Telefone: ${formatPhone(leadPhone)}
 Dashboard: https://cantos-do-mundo-agent.vercel.app/conversations`;
 
-  await broadcast(type, message);
+  try {
+    await broadcast(type, message);
+  } catch (err) {
+    console.error(`[Notify] notifyHumanAgent FAILED for ${leadName}:`, err);
+    throw err;
+  }
 }
 
 export async function notifyDailyReport(summaryText: string) {
