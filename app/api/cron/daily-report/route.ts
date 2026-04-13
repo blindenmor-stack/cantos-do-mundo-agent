@@ -7,10 +7,17 @@ export const maxDuration = 60;
 // Vercel Cron calls this route with an Authorization header
 // Schedule configured in vercel.json: "0 11 * * *" (08:00 BRT = 11:00 UTC)
 export async function GET(req: NextRequest) {
-  // Security: Vercel Cron auto-injects CRON_SECRET header; other callers need it manually
+  // Security: CRON_SECRET must be configured. Vercel Cron auto-injects the Bearer header.
   const authHeader = req.headers.get("authorization");
   const expected = process.env.CRON_SECRET;
-  if (expected && authHeader !== `Bearer ${expected}`) {
+  if (!expected) {
+    console.error("[DailyReport] CRON_SECRET not configured — refusing to run");
+    return NextResponse.json(
+      { error: "server_misconfigured" },
+      { status: 500 }
+    );
+  }
+  if (authHeader !== `Bearer ${expected}`) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

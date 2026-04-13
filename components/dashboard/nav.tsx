@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { BarChart3, Globe, MessageSquare, Settings, Users } from "lucide-react";
+import { BarChart3, Globe, LogOut, MessageSquare, Settings, Users } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
 
 const links = [
   { href: "/dashboard", label: "Dashboard", icon: BarChart3 },
@@ -15,6 +16,20 @@ const links = [
 
 export function DashboardNav() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "logout" }),
+      });
+    } finally {
+      router.push("/login");
+      router.refresh();
+    }
+  }
 
   return (
     <aside className="flex w-60 flex-col border-r border-border bg-card">
@@ -45,8 +60,17 @@ export function DashboardNav() {
       </nav>
       <div className="p-2">
         <Separator className="mb-2" />
-        <p className="px-3 text-xs text-muted-foreground">
-          Agente Miry v1.0
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full justify-start text-muted-foreground hover:text-foreground"
+          onClick={handleLogout}
+        >
+          <LogOut className="h-4 w-4 mr-2" />
+          Sair
+        </Button>
+        <p className="mt-2 px-3 text-xs text-muted-foreground">
+          Agente Miry v1.1
         </p>
       </div>
     </aside>
