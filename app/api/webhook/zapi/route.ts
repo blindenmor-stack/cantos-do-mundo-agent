@@ -4,6 +4,7 @@ import { parseWebhookPayload, getMessageContent, sendMultipleMessages } from "@/
 import { processMessage, calculateScore, getQualificationStatus, generateHandoffSummary, type ConversationContext } from "@/lib/ai-agent";
 import { notifyHumanAgent } from "@/lib/notify";
 import { evaluateBotGate, logGateDecision } from "@/lib/bot-gate";
+import { transcribeAudio, describeImage } from "@/lib/media";
 
 export const maxDuration = 60;
 
@@ -44,8 +45,34 @@ export async function POST(req: NextRequest) {
     const msg = parseWebhookPayload(body);
     if (!msg) return ok({ detail: "ignored" });
 
-    const { type: msgType, content: msgContent } = getMessageContent(msg);
+    let { type: msgType, content: msgContent } = getMessageContent(msg);
     if (!msgContent && msgType === "unknown") return ok({ detail: "no_content" });
+
+    // === Transcribe audio / describe image BEFORE buffering so downstream sees text ===
+    // This lets Whisper/Vision output flow through the normal qualification pipeline.
+    if (msgType === "audio" && msg.audio?.audioUrl) {
+      logInfo("audio_transcribe_start", { phone: msg.phone.replace(/\D/g, ""), url: msg.audio.audioUrl.slice(0, 80) });
+      const transcript = await transcribeAudio(msg.audio.audioUrl);
+      if (transcript) {
+        msgContent = transcript;
+        msgType = "text"; // treat as text from here on
+        logInfo("audio_transcribed", { phone: msg.phone.replace(/\D/g, ""), chars: transcript.length, preview: transcript.slice(0, 150) });
+      } else {
+        logError("audio_transcribe_failed", { phone: msg.phone.replace(/\D/g, "") });
+      }
+    } else if (msgType === "image" && msg.image?.imageUrl) {
+      logInfo("image_describe_start", { phone: msg.phone.replace(/\D/g, ""), url: msg.image.imageUrl.slice(0, 80) });
+      const desc = await describeImage(msg.image.imageUrl, msg.image.caption);
+      if (desc && desc !== "[irrelevante]") {
+        // Combine caption (if any) with vision description — feed as text into the pipeline.
+        const caption = msg.image.caption ? `${msg.image.caption}. ` : "";
+        msgContent = `${caption}[imagem enviada pelo cliente: ${desc}]`;
+        msgType = "text";
+        logInfo("image_described", { phone: msg.phone.replace(/\D/g, ""), desc: desc.slice(0, 150) });
+      } else {
+        logInfo("image_irrelevant_or_failed", { phone: msg.phone.replace(/\D/g, "") });
+      }
+    }
 
     phone = msg.phone.replace(/\D/g, "");
 
@@ -221,23 +248,26 @@ export async function POST(req: NextRequest) {
       return ok({ detail: "saved_human_mode" });
     }
 
-    // Handle pure audio (no text content at all) directly
-    if (msgType === "audio" && (!msgContent || msgContent === "[Áudio]")) {
+    // Fallback when transcription/vision failed — still acknowledge so lead doesn't feel ignored
+    if (msgType === "audio") {
       try {
         await sendMultipleMessages(phone, [
-          "Recebi teu áudio! Vou encaminhar pra nossa especialista. Se quiser adiantar algo por texto também, fica à vontade",
+          "Recebi teu áudio, mas não consegui escutar direito aqui. Consegue me mandar por texto o mais importante? Assim já adianto pra Miriany",
         ]);
         await supabase.from("messages").insert({
-          conversation_id: conversation.id, lead_id: lead.id,
-          direction: "outgoing", content: "Recebi teu áudio! Vou encaminhar pra nossa especialista. Se quiser adiantar algo por texto também, fica à vontade",
-          message_type: "text", is_from_bot: true,
+          conversation_id: conversation.id,
+          lead_id: lead.id,
+          direction: "outgoing",
+          content: "Recebi teu áudio, mas não consegui escutar direito aqui. Consegue me mandar por texto o mais importante? Assim já adianto pra Miriany",
+          message_type: "text",
+          is_from_bot: true,
         });
-      } catch (e) { logError("audio_response", { phone }, e); }
-      return ok({ detail: "audio_handled" });
+      } catch (e) { logError("audio_fallback_response", { phone }, e); }
+      return ok({ detail: "audio_transcription_failed" });
     }
 
-    // Images, videos, documents — save silently, don't respond immediately
-    if (msgType === "image" || msgType === "video" || msgType === "document") {
+    // Videos and documents — save silently, continue to buffer (will be seen as [Vídeo]/[Documento])
+    if (msgType === "video" || msgType === "document") {
       logInfo("media_saved", { phone, type: msgType });
     }
 

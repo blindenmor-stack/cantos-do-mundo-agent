@@ -7,19 +7,33 @@ const AI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 // Detect if a user message contains a question (off-topic or about the company)
 // rather than a direct answer to the current step's question.
-function isUserAskingQuestion(text: string): boolean {
+export function isUserAskingQuestion(text: string): boolean {
   const t = (text || "").toLowerCase().trim();
   if (!t) return false;
-  if (t.includes("?")) return true;
+
+  // Explicit question marks (ASCII or Portuguese/Spanish inverted)
+  if (/[?¿]/.test(t)) return true;
+
   // Common Portuguese question starters
   const starters = [
-    "qual", "quais", "quando", "onde", "como", "quem", "porque", "por que",
-    "quanto", "quantos", "quantas", "voce", "você", "tem ", "tem como",
+    "qual", "quais", "quando", "onde", "como", "quem", "porque", "por que", "pq",
+    "quanto", "quantos", "quantas", "voce", "você", "tem ", "tem como", "há ",
     "vocês", "voces", "posso", "poderia", "consigo", "é possível", "e possivel",
-    "preciso", "precisa", "tem que", "explica", "me explica", "me conta",
-    "faz ", "fazem ", "trabalha", "trabalham", "atende", "atendem",
+    "preciso saber", "dá pra", "da pra", "explica", "me explica", "me conta",
+    "faz ", "fazem ", "trabalha", "trabalham", "atende", "atendem", "aceita", "aceitam",
+    "vende", "vendem", "tem ", "teria ", "cabe", "serve", "funciona", "dura",
   ];
-  return starters.some((s) => t.startsWith(s) || t.startsWith("vc ") || t.startsWith("vcs "));
+  if (starters.some((s) => t.startsWith(s))) return true;
+  if (t.startsWith("vc ") || t.startsWith("vcs ") || t.startsWith("ces ")) return true;
+
+  // Contains interrogative phrase anywhere (even without "?")
+  const anywhere = [
+    "me diz", "me fala", "me explica", "me conta", "tem como",
+    "consegue me", "da pra", "dá pra", "e possivel", "é possível",
+  ];
+  if (anywhere.some((s) => t.includes(s))) return true;
+
+  return false;
 }
 
 // Known question starters — NOT names
