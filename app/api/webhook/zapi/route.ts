@@ -3,7 +3,7 @@ import { getSupabase } from "@/lib/supabase";
 import { parseWebhookPayload, getMessageContent, sendMultipleMessages } from "@/lib/zapi";
 import { processMessage, calculateScore, getQualificationStatus, generateHandoffSummary, type ConversationContext } from "@/lib/ai-agent";
 import { notifyHumanAgent } from "@/lib/notify";
-import { evaluateBotGate, logGateDecision } from "@/lib/bot-gate";
+import { evaluateBotGate } from "@/lib/bot-gate";
 import { transcribeAudio, describeImage } from "@/lib/media";
 
 export const maxDuration = 60;
@@ -250,15 +250,14 @@ export async function POST(req: NextRequest) {
 
     // Fallback when transcription/vision failed — still acknowledge so lead doesn't feel ignored
     if (msgType === "audio") {
+      const fallbackMsg = "Recebi seu áudio, mas não consegui escutar com clareza aqui. Consegue me mandar por texto o mais importante? Assim já adianto pra Miriany.";
       try {
-        await sendMultipleMessages(phone, [
-          "Recebi teu áudio, mas não consegui escutar direito aqui. Consegue me mandar por texto o mais importante? Assim já adianto pra Miriany",
-        ]);
+        await sendMultipleMessages(phone, [fallbackMsg]);
         await supabase.from("messages").insert({
           conversation_id: conversation.id,
           lead_id: lead.id,
           direction: "outgoing",
-          content: "Recebi teu áudio, mas não consegui escutar direito aqui. Consegue me mandar por texto o mais importante? Assim já adianto pra Miriany",
+          content: fallbackMsg,
           message_type: "text",
           is_from_bot: true,
         });
@@ -437,8 +436,12 @@ export async function POST(req: NextRequest) {
       convUpdate.handoff_at = new Date().toISOString();
       convUpdate.handoff_reason = result.handoffReason;
 
-      const score = calculateScore(result.updatedData);
-      convUpdate.handoff_summary = await generateHandoffSummary(result.updatedData, score);
+      const score = result.sensitiveTrigger ? 0 : calculateScore(result.updatedData);
+      convUpdate.handoff_summary = await generateHandoffSummary(
+        result.updatedData,
+        score,
+        result.sensitiveTrigger
+      );
 
       const { error: leadUpdateErr } = await supabase
         .from("leads")
@@ -451,7 +454,7 @@ export async function POST(req: NextRequest) {
           travel_style: result.updatedData.travel_motive,
           budget_range: result.updatedData.budget_per_person,
           qualification_score: score,
-          qualification_status: getQualificationStatus(score),
+          qualification_status: result.sensitiveTrigger ? "needs_attention" : getQualificationStatus(score),
           qualification_summary: convUpdate.handoff_summary,
         })
         .eq("id", lead.id);
@@ -460,10 +463,16 @@ export async function POST(req: NextRequest) {
         logError("lead_update_handoff", { phone, leadId: lead.id, score }, leadUpdateErr);
       }
 
-      // Notify human agent via WhatsApp
-      const status = getQualificationStatus(score);
+      // Notify human agent via WhatsApp — sensitive triggers go as "needs_attention" (high priority)
+      const notifyType = result.sensitiveTrigger
+        ? "needs_attention"
+        : (getQualificationStatus(score) === "qualified"
+          ? "qualified"
+          : getQualificationStatus(score) === "warm"
+            ? "warm"
+            : "handoff");
       await notifyHumanAgent(
-        status === "qualified" ? "qualified" : status === "warm" ? "warm" : "handoff",
+        notifyType,
         result.updatedData.name || "Lead",
         phone,
         convUpdate.handoff_summary as string
