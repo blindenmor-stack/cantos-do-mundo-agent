@@ -97,7 +97,8 @@ export async function POST(req: NextRequest) {
       // Upsert lead (unique on phone — prevents duplicate leads from race conditions)
       const leadInsert: Record<string, unknown> = {
         phone,
-        name: msg.senderName || null,
+        // Em payload fromMe, senderName é a Cantos, não o cliente → não usa.
+        name: msg.fromMe ? null : (msg.senderName || null),
         source: "whatsapp",
         qualification_status: "pending",
         qualification_score: 0,
