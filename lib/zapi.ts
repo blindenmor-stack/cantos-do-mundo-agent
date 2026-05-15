@@ -152,15 +152,18 @@ export interface ZApiMessage {
 }
 
 export function parseWebhookPayload(body: Record<string, unknown>): ZApiMessage | null {
-  // We only care about incoming non-group messages
-  if (!body.phone || body.fromMe) return null;
+  // Capturamos mensagens recebidas E enviadas pelo dispositivo (fromMe).
+  // Mensagens fromMe chegam quando "Notificar mensagens enviadas por mim"
+  // está ligada na Z-API + webhook "Ao enviar" apontado pra este endpoint.
+  // Grupos continuam ignorados.
+  if (!body.phone) return null;
   if (body.isGroup) return null;
 
   const msg: ZApiMessage = {
     phone: body.phone as string,
     isGroup: (body.isGroup as boolean) || false,
     messageId: (body.messageId as string) || "",
-    fromMe: false,
+    fromMe: !!body.fromMe,
     momment: (body.momment as number) || Date.now(),
     senderName: (body.senderName as string) || (body.chatName as string) || undefined,
     text: body.text as ZApiMessage["text"],

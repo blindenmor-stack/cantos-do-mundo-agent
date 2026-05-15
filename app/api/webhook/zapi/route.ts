@@ -10,6 +10,11 @@ export const maxDuration = 60;
 
 const BUFFER_MS = 15000; // 15 seconds buffer — people send multiple short messages
 
+// Kill-switch da IA. Default DESLIGADO: o webhook cria lead/conversa e salva
+// TODAS as mensagens (recebidas + enviadas pelo celular), mas a IA nunca
+// processa nem responde. Religar = setar BOT_REPLIES_ENABLED=true e redeploy.
+const BOT_REPLIES_ENABLED = process.env.BOT_REPLIES_ENABLED === "true";
+
 // Always return 200 to Z-API
 function ok(data: Record<string, unknown> = {}) {
   return NextResponse.json({ status: "ok", ...data });
@@ -50,7 +55,7 @@ export async function POST(req: NextRequest) {
 
     // === Transcribe audio / describe image BEFORE buffering so downstream sees text ===
     // This lets Whisper/Vision output flow through the normal qualification pipeline.
-    if (msgType === "audio" && msg.audio?.audioUrl) {
+    if (BOT_REPLIES_ENABLED && msgType === "audio" && msg.audio?.audioUrl) {
       logInfo("audio_transcribe_start", { phone: msg.phone.replace(/\D/g, ""), url: msg.audio.audioUrl.slice(0, 80) });
       const transcript = await transcribeAudio(msg.audio.audioUrl);
       if (transcript) {
@@ -60,7 +65,7 @@ export async function POST(req: NextRequest) {
       } else {
         logError("audio_transcribe_failed", { phone: msg.phone.replace(/\D/g, "") });
       }
-    } else if (msgType === "image" && msg.image?.imageUrl) {
+    } else if (BOT_REPLIES_ENABLED && msgType === "image" && msg.image?.imageUrl) {
       logInfo("image_describe_start", { phone: msg.phone.replace(/\D/g, ""), url: msg.image.imageUrl.slice(0, 80) });
       const desc = await describeImage(msg.image.imageUrl, msg.image.caption);
       if (desc && desc !== "[irrelevante]") {
@@ -216,16 +221,29 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // === STEP 3: Save incoming message immediately ===
+    // === STEP 3: Save the message immediately ===
+    // fromMe = enviada pela Cantos do próprio celular/WhatsApp → outgoing manual.
+    // Caso contrário = recebida do cliente → incoming.
+    // Quando a IA está off não transcrevemos áudio/imagem, então guardamos a
+    // URL da mídia no metadata pra nada se perder.
+    const mediaMeta: Record<string, unknown> = {};
+    if (msg.audio?.audioUrl) mediaMeta.audioUrl = msg.audio.audioUrl;
+    if (msg.image?.imageUrl) mediaMeta.imageUrl = msg.image.imageUrl;
+    if (msg.video?.videoUrl) mediaMeta.videoUrl = msg.video.videoUrl;
+    if (msg.document?.documentUrl) mediaMeta.documentUrl = msg.document.documentUrl;
+
     const { error: msgInsertErr } = await supabase.from("messages").insert({
       conversation_id: conversation.id,
       lead_id: lead.id,
-      direction: "incoming",
+      direction: msg.fromMe ? "outgoing" : "incoming",
       content: msgContent,
       message_type: msgType,
       is_from_bot: false,
       zapi_message_id: msg.messageId,
-      metadata: msg.referral ? { referral: msg.referral } : {},
+      metadata: {
+        ...(msg.referral ? { referral: msg.referral } : {}),
+        ...mediaMeta,
+      },
     });
     if (msgInsertErr) {
       logError("msg_insert", { phone, convId: conversation.id }, msgInsertErr);
@@ -236,6 +254,18 @@ export async function POST(req: NextRequest) {
       .from("conversations")
       .update({ last_message_at: new Date().toISOString() })
       .eq("id", conversation.id);
+
+    // Mensagem enviada pela Cantos (fromMe) só é registrada — nunca dispara IA.
+    if (msg.fromMe) {
+      logInfo("saved_outgoing_manual", { phone, messageId: msg.messageId });
+      return ok({ detail: "saved_outgoing_manual" });
+    }
+
+    // IA desligada (mantém estrutura): lead/conversa já criados acima e a
+    // mensagem recebida já foi salva — paramos aqui, sem processar nem responder.
+    if (!BOT_REPLIES_ENABLED) {
+      return ok({ detail: "saved_bot_disabled" });
+    }
 
     // Re-read bot_active (may have been toggled by dashboard or another webhook)
     const { data: botCheck } = await supabase
